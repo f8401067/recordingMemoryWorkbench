@@ -1,0 +1,34 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "app.c"
+        "audio.c"
+        "vad.c"
+        "ogg_opus.c"
+        "ogg_mux.c"
+        "spool.c"
+        "uploader.c"
+        "netcfg.c"
+        "board.c"
+        "ui.c"
+        "display.c"
+        "lcd_panel.c"
+        "lcd_ui.c"
+    INCLUDE_DIRS "."
+    REQUIRES
+        esp_driver_i2s
+        esp_driver_gpio
+        esp_driver_i2c
+        esp_driver_spi
+        esp_driver_ledc
+        esp_lcd
+        esp_pm
+        esp_timer
+        nvs_flash
+        esp_wifi
+        esp_http_client
+        esp_http_server
+        app_update
+        littlefs
+        esp_audio_codec
+)

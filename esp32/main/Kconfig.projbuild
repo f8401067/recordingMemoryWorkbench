@@ -1,0 +1,187 @@
+menu "忆录录音笔"
+
+    menu "网络与账号"
+
+        config RECALL_WIFI_SSID
+            string "WiFi 名称 (SSID)"
+            default ""
+            help
+                只支持 2.4GHz。留空则开机后一直等配网（见 README「没有 WiFi 怎么办」）。
+
+        config RECALL_WIFI_PASSWORD
+            string "WiFi 密码"
+            default ""
+
+        config RECALL_SERVER_URL
+            string "服务端地址（出厂默认值）"
+            default "http://192.168.1.10:8787"
+            help
+                填电脑的局域网 IP 和端口，不要带结尾斜杠。
+                ESP32 跑 TLS 很吃内存，内网直接 http 即可。
+                现场配网（Recall-XXXXXX 热点页面）里也能改，改完存 NVS，
+                优先级高于这里的默认值——换服务器不用重新烧固件。
+
+        config RECALL_DEVICE_NAME
+            string "设备名"
+            default "recall-mic"
+            help
+                会作为配对时上报的名字，后台可以改成中文。
+
+        config RECALL_PROV_AP_PASSWORD
+            string "配网热点密码（至少 8 位，留空=开放热点）"
+            default ""
+            help
+                配网时设备会开一个名为 Recall-XXXXXX 的热点（XXXXXX 是设备编号）。
+                留空即开放热点，手机连上就能开 http://192.168.4.1 配网。
+                填了密码则至少 8 位（WPA2 限制）。
+
+        config RECALL_PROV_TIMEOUT_S
+            int "配网等待时间 (秒)"
+            default 180
+            range 30 900
+            help
+                进配网后等多久没人操作就自动退出。
+
+    endmenu
+
+    menu "硬件"
+
+        choice RECALL_BOARD
+            prompt "开发板"
+            default RECALL_BOARD_BOX0
+
+            config RECALL_BOARD_BOX0
+                bool "正点原子 ATK-DNESP32S3 BOX0（240x240 ST7789 + ES8311）"
+                depends on IDF_TARGET_ESP32S3
+                help
+                    小智 AI 语音机器人同款硬件：1.54 寸 240x240 方屏、
+                    ES8311 一颗芯片管录音和播放、三个实体按键（R=GPIO0）。
+
+            config RECALL_BOARD_GENERIC
+                bool "通用（S3 DevKitC-1 / C3 SuperMini + INMP441 数字麦）"
+                help
+                    自己接线的最小系统板：I2S 数字麦克风 + 一个按键 + 可选 OLED。
+
+            config RECALL_BOARD_BOX3
+                bool "正点原子 DNESP32S3 BOX3（320x240 ST7789 + ES7210）"
+                depends on IDF_TARGET_ESP32S3
+                help
+                    ATK-DNESP32S3B3：2.4 寸 ST7789V2 320x240 SPI 屏、
+                    ES7210 采集 + ES8311 输出、AW9523B 扩展 IO。
+
+        endchoice
+
+        choice RECALL_DISPLAY_TYPE
+            prompt "屏幕类型"
+            default RECALL_DISPLAY_ST7789 if RECALL_BOARD_BOX0
+            default RECALL_DISPLAY_ST7789 if RECALL_BOARD_BOX3
+            default RECALL_DISPLAY_AUTO
+
+            config RECALL_DISPLAY_AUTO
+                bool "自动（先探 I2C 上有没有 OLED，没有就当无屏）"
+                help
+                    上电后在 I2C 上找 0x3C / 0x3D 的 SSD1306，
+                    找到就驱动它，找不到就按无屏跑（LED + 蜂鸣器）。
+                    接的是 SPI 的 ST7735 就用下面那个选项，探不出来。
+
+            config RECALL_DISPLAY_NONE
+                bool "无屏幕（LED + 蜂鸣器反馈）"
+
+            config RECALL_DISPLAY_SSD1306
+                bool "SSD1306 OLED 128x64（I2C）"
+
+            config RECALL_DISPLAY_ST7735
+                bool "ST7735 TFT 160x80（SPI）"
+
+            config RECALL_DISPLAY_ST7789
+                bool "ST7789 彩色屏（SPI，分辨率跟板级走）"
+
+        endchoice
+
+        config RECALL_LCD_PCLK_MHZ
+            int "彩色屏 SPI 时钟 (MHz)"
+            depends on RECALL_DISPLAY_ST7789
+            range 10 80
+            default 40
+            help
+                40MHz 刷整屏约 20ms，够用且稳。花屏就把这里降到 26。
+
+        config RECALL_LCD_ROTATION
+            int "彩色屏方向 (0=默认 1=转90度 2=转270度 3=转180度)"
+            depends on RECALL_DISPLAY_ST7789
+            range 0 3
+            default 0
+            help
+                方屏（240x240）保持 0 就行；320x240 横屏用 1。
+                画面上下颠倒或镜像时改这里，不用动代码。
+
+    endmenu
+
+    menu "录音"
+
+        config RECALL_OPUS_BITRATE
+            int "Opus 码率 (bps)"
+            range 6000 32000
+            default 12000
+            help
+                12kbps 单声道 16kHz 是语音笔记的甜点：1 分钟约 90KB，
+                比 64kbps 的 WAV/ADPCM 小 5 倍，识别准确率几乎无损。
+                环境嘈杂或多人讨论可以调到 16000~20000。
+
+        config RECALL_OPUS_COMPLEXITY
+            int "Opus 编码复杂度 (0-10)"
+            range 0 10
+            default 2
+            help
+                复杂度越高越费电。C3 建议 1~2，S3 可以用 3~5。
+
+        config RECALL_MIN_VOICED_MS
+            int "最短有效语音 (ms)"
+            default 3000
+            range 500 60000
+            help
+                一次录音里"真正有人说话"的累计时长低于这个值，
+                就不上传、直接删掉本地文件。
+
+        config RECALL_AUTO_SESSION
+            bool "无人按键时由 VAD 自动开录"
+            default n
+            help
+                打开后设备常驻监听，检测到说话自动开始录音，
+                静音超过 RECALL_AUTO_STOP_MS 自动结束。
+                这样会把功耗从 ~10uA 提到 ~18mA，电池供电时慎用。
+
+        config RECALL_AUTO_STOP_MS
+            int "自动结束的静音时长 (ms)"
+            depends on RECALL_AUTO_SESSION
+            default 8000
+            range 2000 120000
+
+    endmenu
+
+    menu "省电"
+
+        config RECALL_IDLE_SLEEP_S
+            int "空闲多少秒后深睡 (0=不深睡)"
+            default 300
+            range 0 3600
+            help
+                没在录音也没有待上传文件时，超过这个时间就进深睡，
+                电流从 ~18mA 降到 ~10uA，按一下按键唤醒。
+                0 表示永不深睡（调试时用）。
+
+        config RECALL_UPLOAD_RETRY
+            int "上传失败重试次数"
+            default 3
+            range 1 10
+
+        config RECALL_CLOSE_AFTER_UPLOAD
+            bool "上传后立即收尾（马上出转写和纪要）"
+            default y
+            help
+                关闭后由服务端在静默超时（默认 180 秒）时自动收尾，
+                适合"一整天连续记录、最后统一整理"的用法。
+
+    endmenu
+
+endmenu

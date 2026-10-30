@@ -1,0 +1,30 @@
+[project]
+name = "recall-server"
+version = "1.0.0"
+description = "忆录 · 录音转文字与 AI 纪要后端"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "python-multipart>=0.0.12",
+    "httpx>=0.27.0",
+    "websocket-client>=1.8.0",
+    "pyjwt>=2.9.0",
+    "bcrypt>=4.2.0",
+    "python-dotenv>=1.0.1",
+    "psycopg[binary]>=3.2",
+    "psycopg-pool>=3.2",
+    "alembic>=1.14",
+    "sqlalchemy>=2.0",
+]
+
+[project.optional-dependencies]
+# 本地开源 ASR（离线）。需要时装：uv sync --extra local-asr
+# 不装也能跑，只是所有「本地」引擎不可用，云端 ASR 完全不受影响
+local-asr = [
+    "sherpa-onnx>=2.0.1",
+    "faster-whisper>=1.1.0",
+]
+
+[tool.uv]
+package = false

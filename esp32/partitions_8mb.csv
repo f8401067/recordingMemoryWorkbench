@@ -1,0 +1,10 @@
+﻿# 分区表（8MB Flash，ESP32-S3-WROOM-1 N8R8 / N8 常见配置）
+# 重点：spool 分区放本地录音暂存，12kbps Opus 下 5MB ≈ 17 分钟纯语音
+#       实际因为 VAD 跳过静音，容量通常能装下 40 分钟以上的会议
+# name,     type, subtype,  offset,    size
+nvs,        data, nvs,      0x9000,    0x6000,
+otadata,    data, ota,      0xf000,    0x2000,
+phy_init,   data, phy,      0x11000,   0x1000,
+app0,       app,  ota_0,    0x20000,   0x1C0000,
+spool,      data, spiffs,   0x1E0000,  0x500000,
+coredump,   data, coredump, 0x6E0000,  0x10000,

@@ -1,0 +1,41 @@
+# ---- 系统 ----
+.DS_Store
+Thumbs.db
+*.log
+
+# ---- Node ----
+node_modules/
+dist/
+web/node_modules/
+web/dist/
+legacy/nodejs-server/node_modules/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+server-py/.venv/
+uv.lock.bak
+
+# ---- 环境变量 / 密钥 ----
+.env
+*.env.local
+!.env.example
+
+# ---- 运行时数据（录音、上传、db、ASR 模型）----
+data/
+!data/.gitkeep
+
+# ---- 编辑器 / 工具缓存 ----
+.cache/
+.idea/
+.vscode/
+
+# ---- ESP32 (ESP-IDF) ----
+esp32/build/
+esp32/managed_components/
+esp32/sdkconfig
+esp32/sdkconfig.old
+esp32/sdkconfig.h

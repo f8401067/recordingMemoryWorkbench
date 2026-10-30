@@ -1,0 +1,9 @@
+﻿# 分区表（16MB Flash，ESP32-S3-WROOM-1 N16R8）
+# spool 12MB ≈ 80 分钟纯语音，够放一整场会议再上传
+# name,     type, subtype,  offset,    size
+nvs,        data, nvs,      0x9000,    0x6000,
+otadata,    data, ota,      0xf000,    0x2000,
+phy_init,   data, phy,      0x11000,   0x1000,
+app0,       app,  ota_0,    0x20000,   0x200000,
+spool,      data, spiffs,   0x220000,  0xC00000,
+coredump,   data, coredump, 0xE20000,  0x10000,

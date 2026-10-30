@@ -1,0 +1,47 @@
+# ---------------------------------------------------------------------------
+# 通用默认配置（S3 / C3 共用）
+# 功耗相关的开关都在这里，改之前先看 README 的「省电」一节
+# ---------------------------------------------------------------------------
+
+# 分区表：默认按 8MB Flash。4MB 板子改用 sdkconfig.defaults.esp32c3 里的 4MB 表
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_8mb.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0x8000
+
+# CPU：平时 80MHz，录音/编码时拉到 160MHz（DFS）
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=160
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
+
+# 电源管理：动态调频 + tickless 空闲
+CONFIG_PM_ENABLE=y
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+CONFIG_FREERTOS_HZ=1000
+
+# light sleep 时给 Flash 断电，S3 上实测能省 1.5~2mA（见 README）
+CONFIG_ESP_SLEEP_POWER_DOWN_FLASH=y
+
+# 体积/性能：音频编码吃 CPU，用 -O2
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+CONFIG_COMPILER_OPTIMIZATION_ASSERTION_LEVEL=1
+
+# 日志：默认 INFO，现场排查够用
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_COLORS=y
+
+# 任务看门狗放宽：Opus 编码 + LittleFS 写盘会短暂占住 CPU
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+
+# 网络
+CONFIG_LWIP_MAX_SOCKETS=8
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
+CONFIG_LWIP_TCP_MSS=1440
+
+# 蓝牙用不上，关掉省 Flash 和 RAM（C3/S3 也是默认关，这里显式写明）
+CONFIG_BT_ENABLED=n
+
+# LittleFS：分区名和挂载点在代码里指定，这里只把擦除块调到 4KB
+CONFIG_LITTLEFS_READ_SIZE=128
+CONFIG_LITTLEFS_WRITE_SIZE=128

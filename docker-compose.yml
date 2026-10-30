@@ -1,0 +1,35 @@
+services:
+  recall:
+    build:
+      context: .
+      args:
+        # 想在容器里跑本地开源 ASR（faster-whisper）就设成 1
+        INSTALL_LOCAL_ASR: ${INSTALL_LOCAL_ASR:-0}
+    container_name: recall-workbench
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./data:/app/data
+    environment:
+      # 生产环境请改成随机长字符串，并重新登录
+      JWT_SECRET: ${JWT_SECRET:-please-change-this-secret}
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+      ASR_CONCURRENCY: ${ASR_CONCURRENCY:-2}
+      # 可选：想用外置 PostgreSQL 时打开下面这行（也可以在网页「设置 → 数据存储」里填，
+      # 配置会写到 ./data/config.json；环境变量优先级更高，会把界面变成只读）
+      # 更省事的做法：docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
+      # DATABASE_URL: postgresql://recall:${POSTGRES_PASSWORD:-recall}@postgres:5432/recall?sslmode=disable
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - /app/server-py/.venv/bin/python
+        - -c
+        - import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8787/api/health', timeout=3).status == 200 else 1)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # 想连 PostgreSQL 见 docker-compose.postgres.yml（用 -f 叠加即可，不用改这个文件）

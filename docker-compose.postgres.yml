@@ -1,0 +1,35 @@
+# 可选：把 PostgreSQL 一起跑起来（默认 compose 只用内置 SQLite）
+#
+# 用法：
+#   docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d --build
+#
+# 这个文件会给 recall 注入 DATABASE_URL，并额外起一个 postgres 容器。
+# 注意：DATABASE_URL 优先级高于网页里保存的配置，界面上会变成只读。
+# 想改回网页配置：去掉本文件里的 DATABASE_URL 再重启容器。
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: recall-postgres
+    environment:
+      POSTGRES_DB: recall
+      POSTGRES_USER: recall
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-recall}
+      # 中文内容排序/大小写行为更符合直觉
+      LANG: C.UTF-8
+    volumes:
+      - ./pg-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U recall -d recall"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  recall:
+    environment:
+      DATABASE_URL: postgresql://recall:${POSTGRES_PASSWORD:-recall}@postgres:5432/recall?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy

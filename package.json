@@ -1,0 +1,15 @@
+{
+  "name": "recall-workbench",
+  "version": "1.0.0",
+  "private": true,
+  "description": "本地部署的录音转文字 + AI 纪要工作台",
+  "scripts": {
+    "dev": "bash scripts/dev.sh",
+    "build": "cd web && npm run build",
+    "start": "cd server-py && .venv/bin/python -m app.main",
+    "setup": "cd server-py && uv sync",
+    "typecheck": "cd web && npx tsc --noEmit",
+    "docker:up": "docker compose up -d --build",
+    "docker:down": "docker compose down"
+  }
+}

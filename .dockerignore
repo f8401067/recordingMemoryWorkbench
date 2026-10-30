@@ -1,0 +1,15 @@
+# 构建上下文排除（data 里的 ASR 模型有 1GB+，node_modules / .venv 会在镜像里重新装）
+.git
+.gitignore
+.DS_Store
+*.log
+
+data
+legacy
+
+web/node_modules
+web/dist
+
+server-py/.venv
+**/__pycache__
+**/*.pyc
