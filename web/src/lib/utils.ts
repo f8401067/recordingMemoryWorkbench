@@ -29,6 +29,22 @@ export function fmtTime(iso: string): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
+/** 一段录音的开始 → 结束时间；还在录时显示「录音中」 */
+export function fmtTimeRange(r: {
+  startedAt: string;
+  endedAt?: string | null;
+  durationMs?: number;
+  status?: string;
+}): string {
+  const start = fmtTime(r.startedAt);
+  if (r.status === 'recording') return `${start} – 录音中`;
+  const endIso = r.endedAt
+    ?? (r.durationMs ? new Date(new Date(r.startedAt).getTime() + r.durationMs).toISOString() : null);
+  if (!endIso) return start;
+  const end = fmtTime(endIso);
+  return end === start ? start : `${start} – ${end}`;
+}
+
 export function fmtDate(iso: string): string {
   const d = new Date(iso);
   return `${d.getMonth() + 1}月${d.getDate()}日`;

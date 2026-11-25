@@ -4,17 +4,29 @@
 #include <string.h>
 
 #include "app_config.h"
+#include "esp_log.h"
+#include "sr_vad.h"
 
-void vad_init(vad_t *v, uint32_t frame_ms)
+static const char *TAG = "vad";
+
+void mvad_init(vad_t *v, uint32_t frame_ms)
 {
     memset(v, 0, sizeof(*v));
     v->frame_ms = frame_ms ? frame_ms : APP_FRAME_MS;
-    /* 起始噪声底取一个保守值，前 2 秒会很快跟上真实环境 */
-    v->noise_floor = 120.0f;
+    /* 模式见 app_config.h 的 VAD_SR_MODE：数值越大越不肯认人声。
+     * 当前用 1（Aggressive）。说话开头、正常音量老是不触发就降到 0；
+     * 安静环境下反而误触发多，再往 2 调。 */
+    v->sr = sr_vad_create(VAD_SR_MODE);
+    if (!v->sr) {
+        ESP_LOGE(TAG, "ESP-SR VAD 创建失败，人声检测不可用");
+    }
+    v->noise_rms = 60.0f; /* 初始噪声底，几帧内就会跟上真实环境 */
 }
 
-void vad_reset_segment(vad_t *v)
+void mvad_reset_segment(vad_t *v)
 {
+    /* 注意：noise_rms 故意不重置——噪声底要跨片段/跨会话延续，
+     * 每段重来会让开头几帧的闸门失真 */
     v->voiced_ms = 0;
     v->half_ms = 0;
     v->total_ms = 0;
@@ -24,7 +36,7 @@ void vad_reset_segment(vad_t *v)
     v->silence_run = 0;
 }
 
-int vad_level(const vad_t *v)
+int mvad_level(const vad_t *v)
 {
     /* 用 dB 映射到 0~100，安静时也有细微变化 */
     float db = 20.0f * log10f((v->last_rms > 1.0f ? v->last_rms : 1.0f) / 60.0f);
@@ -38,56 +50,51 @@ int vad_level(const vad_t *v)
     return (int)pct;
 }
 
-bool vad_process(vad_t *v, const int16_t *pcm, int n)
+bool mvad_process(vad_t *v, const int16_t *pcm, int n)
 {
     if (n <= 0) {
         return v->speech;
     }
 
+    /* RMS 只用于界面上的电平条，判定交给 ESP-SR */
     int64_t acc = 0;
-    int zc = 0;
-    int16_t prev = pcm[0];
     for (int i = 0; i < n; i++) {
         int32_t s = pcm[i];
         acc += (int64_t)s * s;
-        if ((s >= 0) != (prev >= 0)) {
-            zc++;
-        }
-        prev = (int16_t)s;
     }
-
     float rms = sqrtf((float)acc / (float)n);
-    float zcr = (float)zc / (float)n;
     v->last_rms = rms;
-    v->last_zcr = zcr;
-
-    float dyn = v->noise_floor * VAD_TRIGGER_RATIO;
-    if (dyn < VAD_MIN_RMS) {
-        dyn = VAD_MIN_RMS;
+    if (rms > v->peak_rms) {
+        v->peak_rms = rms;
     }
 
-    /* 过零率太高的多半是摩擦声/键盘声，不当人声，但可以用来更新噪声底 */
-    bool above = (rms > dyn) && (zcr < VAD_MAX_ZCR);
+    /* 注意：sr_vad_run 会按 16kHz/20ms 重新切帧，所以 n 必须正好是 320 */
+    bool raw = sr_vad_run((sr_vad_t)v->sr, (int16_t *)pcm);
 
-    /* 噪声底只在"非语音"时跟随，避免人声把门限越抬越高 */
-    if (!v->speech && !above) {
-        v->noise_floor = (1.0f - VAD_NOISE_ALPHA) * v->noise_floor + VAD_NOISE_ALPHA * rms;
-        if (v->noise_floor < 20.0f) {
-            v->noise_floor = 20.0f;
-        }
-        if (v->noise_floor > 4000.0f) {
-            v->noise_floor = 4000.0f;
-        }
+    /* 自适应噪声底：更安静时快速降（0.8/0.2），VAD 判静音时极慢上浮
+     * （适应环境变吵），VAD 说是人声的帧不动，免得把说话算进噪声底 */
+    if (v->noise_rms <= 1.0f) {
+        v->noise_rms = rms;
+    } else if (rms < v->noise_rms) {
+        v->noise_rms = v->noise_rms * 0.8f + rms * 0.2f;
+    } else if (!raw) {
+        v->noise_rms = v->noise_rms * 0.995f + rms * 0.005f;
     }
-
+    float gate = VAD_RMS_ABS_MIN;
+    float adapt = v->noise_rms * VAD_NOISE_FACTOR + VAD_NOISE_MARGIN;
+    if (adapt > gate) {
+        gate = adapt;
+    }
+    v->last_gate = gate;
+    /* 双条件：WebRTC 说像人声 + 能量确实高于底噪。只看 VAD 会被底噪骗 */
+    bool above = raw && (rms >= gate);
+    v->last_above = above;
     v->total_ms += v->frame_ms;
 
     if (above) {
         v->speech_run++;
         v->silence_run = 0;
-        if (rms > v->peak_rms) {
-            v->peak_rms = rms;
-        }
+        /* 连续够久才起判：单帧抖动不算（也顺便挡掉敲击这种极短瞬态） */
         if (!v->speech && v->speech_run >= VAD_TRIGGER_FRAMES) {
             v->speech = true;
         }
@@ -101,6 +108,7 @@ bool vad_process(vad_t *v, const int16_t *pcm, int n)
             v->voiced_ms += v->frame_ms;
         } else {
             v->half_ms += v->frame_ms;
+            /* 拖尾：连续静音够久才真正结束，避免把尾音切掉 */
             if ((uint32_t)v->silence_run * v->frame_ms >= VAD_HANGOVER_MS) {
                 v->speech = false;
                 v->silence_run = 0;

@@ -3,14 +3,11 @@ from .backends import (
     DatabaseError,
     PgConn,
     PostgresBackend,
-    SqliteBackend,
-    SqliteConn,
     build_backend,
     ensure_database,
+    is_missing_database,
     pg_error_text,
     pg_params,
-    probe,
-    probe_server,
 )
 from .sqlutil import split_statements, translate
 
@@ -19,14 +16,11 @@ __all__ = [
     "DatabaseError",
     "PgConn",
     "PostgresBackend",
-    "SqliteBackend",
-    "SqliteConn",
     "build_backend",
     "ensure_database",
+    "is_missing_database",
     "pg_error_text",
     "pg_params",
-    "probe",
-    "probe_server",
     "split_statements",
     "translate",
 ]

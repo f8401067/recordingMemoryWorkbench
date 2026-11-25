@@ -3,11 +3,14 @@ import { Link, useNavigate } from 'react-router-dom';
 import {
   ArrowUpRight, FileUp, History, Loader2, Mic, Search, Sparkles, X,
 } from 'lucide-react';
-import { api, uploadFile, type Recording, type Summary } from '../lib/api';
+import { api, deleteRecording, uploadFile, type Recording, type Summary } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useToast } from '../lib/toast';
 import RecordingCard, { EmptyState } from '../components/RecordingCard';
+import RecordingList from '../components/RecordingList';
+import DayTimeline from '../components/DayTimeline';
 import { cn, fmtDurationCn, friendlyDay, todayStr, weekdayCn } from '../lib/utils';
+import { prewarmMic } from '../lib/micStream';
 
 type Stats = {
   recordings: number;
@@ -36,6 +39,9 @@ export default function Home() {
   const [todaySummary, setTodaySummary] = useState<Summary | null>(null);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState('');
+  /** 滑到某段时间后高亮那一段录音 */
+  const [flashId, setFlashId] = useState<string | null>(null);
+  const flashTimer = useRef<number>();
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -62,10 +68,30 @@ export default function Home() {
     void load();
   }, [load]);
 
+  useEffect(() => () => window.clearTimeout(flashTimer.current), []);
+
+  /** 时间滑点停在哪段录音，就把它滚到视野中间并闪一下 */
+  const jumpToRecording = useCallback((r: Recording) => {
+    const el = document.querySelector<HTMLElement>(`[data-recording-id="${r.id}"]`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setFlashId(r.id);
+    window.clearTimeout(flashTimer.current);
+    flashTimer.current = window.setTimeout(() => setFlashId(null), 1600);
+  }, []);
+
+  /** 首页只列当天的录音，往前的日子去「回忆」里翻 */
   const filtered = useMemo(() => {
-    if (!q.trim()) return list;
+    const today = todayStr();
+    const rows = list.filter((r) => r.date === today);
+    if (!q.trim()) return rows;
     const k = q.trim().toLowerCase();
-    return list.filter((r) => `${r.title} ${r.excerpt ?? ''}`.toLowerCase().includes(k));
+    return rows.filter((r) =>
+      [r.title, r.excerpt ?? '', r.summaryTitle ?? '', ...(r.summaryHighlights ?? [])]
+        .join(' ')
+        .toLowerCase()
+        .includes(k),
+    );
   }, [list, q]);
 
   const grouped = useMemo(() => {
@@ -77,6 +103,20 @@ export default function Home() {
     }
     return [...map.entries()].sort((a, b) => b[0].localeCompare(a[0]));
   }, [filtered]);
+
+  const removeRecording = async (r: Recording) => {
+    if (!confirm(`删除「${r.title}」？\n删除后无法恢复，音频与转写文字都会被清除。`)) return;
+    const snapshot = list;
+    setList((cur) => cur.filter((x) => x.id !== r.id));
+    try {
+      await deleteRecording(r.id);
+      toast.push('已删除', 'success');
+      void load();
+    } catch (e: any) {
+      setList(snapshot);
+      toast.push(e?.message ?? '删除失败', 'error');
+    }
+  };
 
   const todayCount = list.filter((r) => r.date === todayStr()).length;
 
@@ -113,7 +153,12 @@ export default function Home() {
               : '今天还没有录音，点一下开始吧'}
           </p>
         </div>
-        <Link to="/record" className="btn-primary h-10 px-4 shrink-0 hidden sm:inline-flex">
+        <Link
+          to="/record"
+          state={{ autoStart: true }}
+          onClick={() => prewarmMic()}
+          className="btn-primary h-10 px-4 shrink-0 hidden sm:inline-flex"
+        >
           <Mic size={16} />
           开始录音
         </Link>
@@ -153,7 +198,7 @@ export default function Home() {
             <p className="text-[12px] text-muted mt-1 line-clamp-2 leading-relaxed">
               {todaySummary.stats?.highlights?.length
                 ? todaySummary.stats.highlights.join(' · ')
-                : '今天的 AI 日报已生成'}
+                : '今天的回忆已生成'}
             </p>
           </div>
         </Link>
@@ -163,6 +208,8 @@ export default function Home() {
       <div className="mt-4 grid grid-cols-2 gap-3">
         <Link
           to="/record"
+          state={{ autoStart: true }}
+          onClick={() => prewarmMic()}
           className="card p-4 flex items-center gap-3 hover:border-brand/30 hover:shadow-soft transition-all"
         >
           <div className="h-9 w-9 rounded-xl bg-gradient-to-br from-[var(--brand)] to-[var(--brand-2)] grid place-items-center shadow-[0_6px_14px_-8px_var(--brand)]">
@@ -234,7 +281,7 @@ export default function Home() {
 
         {!loading && grouped.length === 0 && (
           <EmptyState
-            title={q ? '没有找到相关记录' : '还没有任何录音'}
+            title={q ? '没有找到相关记录' : '今天还没有录音'}
             desc={
               q
                 ? '换个关键词试试'
@@ -242,7 +289,12 @@ export default function Home() {
             }
             action={
               !q && (
-                <Link to="/record" className="btn-primary h-9 px-4 text-[13px]">
+                <Link
+                  to="/record"
+                  state={{ autoStart: true }}
+                  onClick={() => prewarmMic()}
+                  className="btn-primary h-9 px-4 text-[13px]"
+                >
                   <Mic size={15} />
                   开始第一段录音
                 </Link>
@@ -251,23 +303,32 @@ export default function Home() {
           />
         )}
 
-        {grouped.map(([date, items]) => (
-          <section key={date}>
-            <div className="flex items-center gap-2 mb-2.5 px-0.5">
-              <h2 className="text-[12.5px] font-medium text-muted">
-                {friendlyDay(date)}
-                <span className="ml-1.5 opacity-60">{weekdayCn(date)}</span>
-              </h2>
-              <div className="flex-1 h-px bg-line" />
-              <span className="text-[11px] text-muted/70">{items.length} 段</span>
-            </div>
-            <div className="space-y-2.5">
-              {items.map((r) => (
-                <RecordingCard key={r.id} r={r} />
-              ))}
-            </div>
-          </section>
-        ))}
+        {grouped.map(([date, items]) => {
+          const isToday = date === todayStr();
+          return (
+            <section key={date}>
+              <div className="flex items-center gap-2 mb-2.5 px-0.5">
+                <h2 className="text-[12.5px] font-medium text-muted">
+                  {friendlyDay(date)}
+                  <span className="ml-1.5 opacity-60">{weekdayCn(date)}</span>
+                </h2>
+                <div className="flex-1 h-px bg-line" />
+                <span className="text-[11px] text-muted/70">{items.length} 段</span>
+              </div>
+
+              {isToday && (
+                // 往下翻今天的录音时，时段滑条一直贴在顶部（移动端要让开顶栏）
+                <div className="sticky z-20 -mx-4 px-4 pt-1.5 pb-2 bg-bg/85 backdrop-blur-xl top-[calc(env(safe-area-inset-top,0px)_+_3.5rem)] md:-mx-8 md:px-8 md:top-0">
+                  <DayTimeline items={items} onJump={jumpToRecording} />
+                </div>
+              )}
+
+              <div className={isToday ? 'mt-2.5' : ''}>
+                <RecordingList items={items} onDelete={removeRecording} highlightId={flashId} />
+              </div>
+            </section>
+          );
+        })}
       </div>
     </div>
   );

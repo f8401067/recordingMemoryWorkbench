@@ -5,9 +5,11 @@ import { ToastProvider } from './lib/toast';
 import Layout from './components/Layout';
 import Login from './pages/Login';
 import Home from './pages/Home';
+import ActionsPage from './pages/Actions';
 import RecordPage from './pages/Record';
 import RecordingDetail from './pages/RecordingDetail';
 import CalendarPage from './pages/Calendar';
+import FindPage from './pages/Find';
 import SettingsPage from './pages/Settings';
 import SetupPage from './pages/Setup';
 import SummaryDetailPage from './pages/SummaryDetail';
@@ -61,10 +63,12 @@ export default function App() {
               }
             >
               <Route index element={<Home />} />
+              <Route path="actions" element={<ActionsPage />} />
               <Route path="record" element={<RecordPage />} />
               <Route path="recordings/:id" element={<RecordingDetail />} />
               <Route path="summaries/:id" element={<SummaryDetailPage />} />
               <Route path="calendar" element={<CalendarPage />} />
+              <Route path="find" element={<FindPage />} />
               <Route path="settings" element={<SettingsPage />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />

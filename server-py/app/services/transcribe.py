@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
+import shutil
 from typing import Any, TypedDict
 
 from ..bus import emit_recording
+from ..config import UPLOADS_DIR
 from ..db import all_, execute, now_iso, one
 from ..jobs import enqueue
 from .providers import build_asr, resolve_asr
 from .settings import read_settings
+from .transcript_value import evaluate_transcript, should_auto_discard
 
 
 class Segment(TypedDict):
@@ -138,8 +141,21 @@ def handle_transcribe_job(payload: dict) -> None:
     finalize_recording(rec["id"])
 
 
-def finalize_recording(recording_id: str) -> None:
-    """全部片子处理完 → 更新录音状态，必要时触发自动纪要。"""
+def discard_recording(recording_id: str) -> None:
+    """彻底删掉一条录音：分片、纪要、上传目录一起清。手动删除与自动丢弃共用。"""
+    execute("DELETE FROM summaries WHERE recording_id = ?", (recording_id,))
+    execute("DELETE FROM chunks WHERE recording_id = ?", (recording_id,))
+    execute("DELETE FROM recordings WHERE id = ?", (recording_id,))
+    shutil.rmtree(UPLOADS_DIR / recording_id, ignore_errors=True)
+    emit_recording(recording_id, "discarded", {"id": recording_id})
+
+
+def finalize_recording(recording_id: str, allow_merge: bool = True) -> None:
+    """全部片子处理完 → 更新录音状态，必要时触发自动纪要。
+
+    allow_merge=True 时，收尾后会检查有没有前后相隔不到 5 分钟的邻居，
+    有就真合并成一条（见 services/merge.py），再由自动纪要产出一份覆盖整组的纪要。
+    """
     rec = one("SELECT * FROM recordings WHERE id = ?", (recording_id,))
     if not rec:
         return
@@ -166,17 +182,60 @@ def finalize_recording(recording_id: str) -> None:
         duration = max(duration, (c.get("start_offset_ms") or 0) + (c.get("duration_ms") or 0))
 
     ended_at = rec.get("ended_at") or now_iso()
+
+    # 转写完了才谈得上"有没有内容"：每次 finalize 都重算一遍，重试/补充转写后会自动纠正
+    segments = transcript_for(recording_id)["segments"] if status == "ready" else []
+    low, reason = evaluate_transcript(segments) if status == "ready" else (False, None)
+
+    # 设备常驻监听录到的纯杂音：转写确认没有人声后直接丢弃，不再进录音库。
+    # 只对设备录音生效，网页/手动上传的内容不自动删，避免误删用户主动录的东西。
+    if rec.get("source") == "device" and should_auto_discard(low, reason):
+        discard_recording(recording_id)
+        return
+
     execute(
-        """UPDATE recordings SET status = ?, duration_ms = ?, ended_at = COALESCE(ended_at, ?)
+        """UPDATE recordings SET status = ?, duration_ms = ?, ended_at = COALESCE(ended_at, ?),
+           low_value = ?, low_reason = ?, value_checked = 1
            WHERE id = ?""",
-        (status, duration, ended_at, recording_id),
+        (
+            status,
+            duration,
+            ended_at,
+            1 if low else 0,
+            reason,
+            recording_id,
+        ),
     )
-    emit_recording(recording_id, "recording", {"status": status, "durationMs": duration})
+    emit_recording(
+        recording_id,
+        "recording",
+        {"status": status, "durationMs": duration, "lowValue": bool(low), "lowReason": reason},
+    )
 
     if status != "ready":
         return
 
+    # 前后相隔不到 5 分钟的碎片合成一条。合并后本条可能已被吸收掉，
+    # 那种情况下由主记录的 finalize 统一走后面的自动纪要，这里直接收工。
+    if allow_merge:
+        from .merge import reconcile_after_finalize  # 延迟导入：两边互相依赖
+
+        merged_id = reconcile_after_finalize(recording_id)
+        if merged_id != recording_id:
+            return
+
+    # 空录音/只有噪声的话没必要再烧 token 生成纪要
+    if low:  
+        return
+
     settings = read_settings(rec["user_id"])
+
+    # 本地说话人分离在纪要之前排队：只标说话人，不影响纪要生成
+    if settings.get("speakerDiarization") and not rec.get("diarized_at"):
+        from .diarize import enqueue_diarize
+
+        enqueue_diarize(recording_id)
+
     if not settings.get("autoSummarize"):
         return
     if rec.get("summary_status") in ("ready", "generating", "queued"):
@@ -206,7 +265,9 @@ def requeue_chunk(chunk_id: str) -> None:
         (now_iso(), chunk["id"]),
     )
     execute(
-        "UPDATE recordings SET status = 'processing', summary_status = 'none' WHERE id = ?",
+        "UPDATE recordings SET status = 'processing', summary_status = 'none', "
+        "diarized_at = NULL, speaker_count = NULL, speaker_embeddings = NULL, "
+        "speaker_matches = NULL, user_present = NULL, user_similarity = NULL WHERE id = ?",
         (chunk["recording_id"],),
     )
     emit_recording(

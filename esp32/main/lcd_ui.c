@@ -1,6 +1,8 @@
 /* 彩色屏界面：和单色版共用同一个 screen_model_t。
  * 分辨率由板级给（BOX0 是 240x240 方屏），排版全部按比例算。
  */
+#if !BOARD_DISPLAY_EPAPER
+
 #include <stdio.h>
 #include <string.h>
 
@@ -37,9 +39,17 @@ static void top_bar(const screen_model_t *m, uint16_t accent)
     lcd_fill(0, 0, LCD_W, TOP_H, C_CARD);
     lcd_fill(0, TOP_H - 2, LCD_W, 2, accent);
     lcd_text(10, (TOP_H - 2 - 7 * T_TITLE) / 2, T_TITLE, C_FG, -1, m->title);
+    int right = LCD_W - 10;
+    if (m->batt >= 0) {
+        char b[12];
+        snprintf(b, sizeof(b), "%d%%", m->batt);
+        int w = lcd_text_w(b, T_SMALL);
+        lcd_text(right - w, (TOP_H - 2 - 7 * T_MID) / 2, T_MID, C_ACC, -1, b);
+        right -= w + 8;
+    }
     if (m->code[0] && m->kind != SCR_PROV) {
         /* 配网页的编号已经写在热点名里了，右上角不重复 */
-        lcd_text_right(LCD_W - 10, (TOP_H - 2 - 7 * T_SMALL) / 2, T_SMALL, C_DIM, -1, m->code);
+        lcd_text_right(right, (TOP_H - 2 - 7 * T_SMALL) / 2, T_SMALL, C_DIM, -1, m->code);
     }
 }
 
@@ -94,12 +104,11 @@ void lcd_ui_render(const screen_model_t *m)
 
     case SCR_REC: {
         top_bar(m, C_BAD);
-        char t[10];
-        unsigned secs = m->secs > 99 * 60 + 59 ? 99 * 60 + 59 : m->secs;
-        snprintf(t, sizeof(t), "%02u:%02u", secs / 60, secs % 60);
+        /* 常驻模式下不显示计时，只给一句状态 */
         int sc = T_BIG;
-        lcd_dot(LCD_W / 2 - (int)lcd_text_w(t, sc) / 2 - 22, TOP_H + 24 + 7 * sc / 2, 11, m->blink ? C_BAD : C_CARD);
-        lcd_text_center(TOP_H + 24, sc, C_FG, -1, t);
+        lcd_dot(LCD_W / 2 - (int)lcd_text_w("RECORDING", sc) / 2 - 22, TOP_H + 24 + 7 * sc / 2, 11,
+                m->blink ? C_BAD : C_CARD);
+        lcd_text_center(TOP_H + 24, sc, C_FG, -1, "RECORDING");
 
         /* 电平条 */
         const int cells = 20, bw = 8, gap = 1;
@@ -114,7 +123,35 @@ void lcd_ui_render(const screen_model_t *m)
             }
             lcd_fill(bx + i * (bw + gap), by, bw, 14, c);
         }
-        footer(m->hint, C_DIM);
+        lcd_text_center(by + 14 + 12, T_SMALL, C_DIM, -1,
+                        m->line[0] ? m->line : "DOUBLE TAP: STOP");
+        footer(m->hint[0] ? m->hint : "HOLD 3S: RESET WIFI", C_DIM);
+        break;
+    }
+
+    case SCR_LISTEN: {
+        top_bar(m, C_ACC);
+        int y = TOP_H + 26;
+        int sc = lcd_fit_scale("LISTENING", LCD_W - 32, T_BIG);
+        lcd_text_center(y, sc, C_ACC, -1, "LISTENING");
+        y += 7 * sc + 18;
+        lcd_text_center(y, T_MID, C_FG, -1, m->line[0] ? m->line : "SPEAK ANYTIME");
+        if (m->note[0]) {
+            y += 7 * T_MID + 10;
+            lcd_text_center(y, T_SMALL, C_DIM, -1, m->note);
+        }
+        footer(m->hint[0] ? m->hint : "HOLD 3S: RESET WIFI", C_DIM);
+        break;
+    }
+
+    case SCR_PAUSED: {
+        top_bar(m, C_WARN);
+        int y = TOP_H + 26;
+        int sc = lcd_fit_scale("PAUSED", LCD_W - 32, T_BIG);
+        lcd_text_center(y, sc, C_WARN, -1, "PAUSED");
+        y += 7 * sc + 18;
+        lcd_text_center(y, T_MID, C_FG, -1, m->line[0] ? m->line : "MIC + REC OFF");
+        footer(m->hint[0] ? m->hint : "PWR: RESUME", C_DIM);
         break;
     }
 
@@ -169,12 +206,21 @@ void lcd_ui_render(const screen_model_t *m)
         break;
     }
 
+    case SCR_OFF: {
+        lcd_clear(0x0000);
+        int sc = lcd_fit_scale("OFF", LCD_W - 24, T_BIG + 2);
+        lcd_text_center(LCD_H / 2 - 7 * sc, sc, 0xFFFF, -1, "OFF");
+        lcd_text_center(LCD_H - 20, T_SMALL, 0xFFFF, -1, "PRESS PWR TO START");
+        break;
+    }
+
     case SCR_READY:
     default: {
         top_bar(m, C_ACC);
         int y = TOP_H + 18;
-        lcd_text_center(y, T_BIG, C_FG, -1, "HOLD 0.7S");
-        y += 7 * T_BIG + 12;
+        int big = lcd_fit_scale("HOLD 0.7S", LCD_W - 16, T_BIG);
+        lcd_text_center(y, big, C_FG, -1, "HOLD 0.7S");
+        y += 7 * big + 12;
         lcd_text_center(y, T_MID, C_ACC, -1, "TO RECORD");
         y += 7 * T_MID + 14;
         if (m->line[0]) {
@@ -191,3 +237,5 @@ void lcd_ui_render(const screen_model_t *m)
 
     lcd_present();
 }
+
+#endif /* !BOARD_DISPLAY_EPAPER */

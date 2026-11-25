@@ -125,6 +125,14 @@ def provider_catalog() -> dict:
     return {"asr": ASR_KINDS, "llm": LLM_KINDS}
 
 
+def _discard(path: Path) -> None:
+    """删探测用的临时音频；删不掉不能影响体检结论（受限环境 unlink 可能抛 OSError）。"""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _silent_wav(seconds: float = 0.6, sample_rate: int = 16000) -> Path:
     path = TMP_DIR / f"probe-{uuid.uuid4().hex}.wav"
     buf = io.BytesIO()
@@ -196,7 +204,7 @@ def test_provider(provider: dict) -> dict:
                 try:
                     res = engine.transcribe(str(tmp), "audio/wav", None, 600)
                 finally:
-                    tmp.unlink(missing_ok=True)
+                    _discard(tmp)
                 meta = res.get("meta") or {}
                 used = meta.get("model") or provider.get("model") or ""
                 return {
@@ -209,7 +217,7 @@ def test_provider(provider: dict) -> dict:
             try:
                 engine.transcribe(str(tmp), "audio/wav", None, 600)
             finally:
-                tmp.unlink(missing_ok=True)
+                _discard(tmp)
             return {
                 "ok": True,
                 "message": "连接成功，识别接口可正常调用",

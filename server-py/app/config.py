@@ -8,7 +8,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+# 配置文件：数据库连接、JWT 密钥、管理员账号等都写在这里（容器部署时用环境变量覆盖）
+ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(ENV_FILE)
 
 
 def _data_dir() -> Path:

@@ -1,20 +1,28 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import {
-  AlertCircle, AlertTriangle, AudioLines, BrainCircuit, Check, CheckCircle2, ChevronDown, Copy, Cpu,
-  Database, Eye, EyeOff, HardDrive, KeyRound, Link2, Loader2, Plus, Power, Radio, RefreshCw,
+  AlertCircle, AudioLines, BrainCircuit, Check, CheckCircle2, Copy, Cpu,
+  Eye, EyeOff, FileText, KeyRound, Link2, ListChecks, Loader2, Plug, Plus, Power, Radio, RefreshCw,
   Server, Settings2, Sparkles, Star, Trash2, X, Zap,
 } from 'lucide-react';
 import {
-  api, applyDbConfig, bindDevice, closeDeviceSession, deleteDevice, deleteLocalAsrModel,
-  downloadLocalAsrModel, fetchProviderModels, getDbConfig, getLocalAsr, listDeviceClaims,
-  listDevices, probeProvider, resetDeviceToken, testDbConnection, updateDevice,
-  type DbConfig, type DbDriver, type DbStatus, type Device, type DeviceClaim,
-  type LocalAsrBackend, type LocalAsrPayload, type ProviderItem, type UserSettings,
+  api, bindDevice, closeDeviceSession, deleteDiarizationModel, deleteDevice, deleteLocalAsrModel,
+  deleteVoiceProfile, downloadDiarization, downloadLocalAsrModel, fetchProviderModels, getDiarization,
+  getLocalAsr, getVoiceProfiles, listDeviceClaims, listDevices, probeProvider, resetDeviceToken,
+  updateDevice,
+  type Device, type DeviceClaim, type DiarizationStatus, type LocalAsrBackend, type LocalAsrPayload,
+  type ProviderItem, type UserSettings, type VoiceProfile,
 } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useToast } from '../lib/toast';
 import { cn, copyText, fmtDurationCn, fmtTime } from '../lib/utils';
+import { useTaskBoard } from '../lib/system';
+import Section, { Switch } from './settings/Section';
+import PromptsTab from './settings/PromptsTab';
+import McpTab from './settings/McpTab';
+import McpServiceCard from './settings/McpServiceCard';
+import TasksTab from './settings/TasksTab';
+import LogsTab from './settings/LogsTab';
 
 type KindMeta = {
   kind: string;
@@ -39,6 +47,7 @@ type Catalog = { asr: KindMeta[]; llm: KindMeta[] };
 /** 列表里显示的短名字，比原始的 kind 友好 */
 const KIND_LABELS: Record<string, string> = {
   'local-sherpa-onnx': '本地 sherpa-onnx',
+  'local-mlx-qwen3-asr': '本地 MLX Qwen3-ASR',
   'local-faster-whisper': '本地 faster-whisper',
   'local-whisper-cpp': '本地 whisper.cpp',
   'dashscope-paraformer': '百炼 Paraformer',
@@ -94,6 +103,7 @@ const cleanCodeInput = (raw: string) => {
 
 const PRESETS: Record<string, { baseUrl: string; model: string }> = {
   'local-sherpa-onnx': { baseUrl: '', model: 'sensevoice-small' },
+  'local-mlx-qwen3-asr': { baseUrl: '', model: 'qwen3-asr-1.7b-6bit' },
   'local-faster-whisper': { baseUrl: '', model: 'small' },
   'local-whisper-cpp': { baseUrl: '', model: 'small' },
   'dashscope-paraformer': { baseUrl: 'https://dashscope.aliyuncs.com', model: 'paraformer-realtime-v2' },
@@ -280,6 +290,159 @@ function LocalModelPicker({
           </div>
         );
       })()}
+    </div>
+  );
+}
+
+/** 说话人分离模型：约 45MB，下载后本地推理，音频不出本机 */
+function DiarizationModel() {
+  const toast = useToast();
+  const [data, setData] = useState<DiarizationStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      setData(await getDiarization());
+    } catch {
+      /* 拉不到就保持上一份 */
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+    const t = setInterval(() => void load(), 1500);
+    return () => clearInterval(t);
+  }, [load]);
+
+  const download = async () => {
+    setBusy(true);
+    try {
+      await downloadDiarization();
+      toast.push('已开始下载，完成后自动可用', 'success');
+      await load();
+    } catch (e: any) {
+      toast.push(e?.message ?? '下载失败', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async () => {
+    if (!confirm('删除说话人分离模型？删除后需要重新下载。')) return;
+    try {
+      await deleteDiarizationModel();
+      toast.push('已删除', 'success');
+      await load();
+    } catch (e: any) {
+      toast.push(e?.message ?? '删除失败', 'error');
+    }
+  };
+
+  const dl = data?.download;
+  const downloading = dl?.status === 'downloading';
+  const pct = dl && dl.total > 0 ? Math.min(100, Math.round((dl.received / dl.total) * 100)) : null;
+
+  return (
+    <div className="rounded-xl border border-line px-3 py-2.5">
+      <div className="flex items-center gap-2">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[12.5px] font-medium">说话人分离模型</span>
+            <span className="text-[10.5px] text-muted font-mono">≈45MB</span>
+            {data?.installed && <Check size={12} className="text-emerald-500 shrink-0" />}
+          </div>
+          <div className="text-[11px] text-muted mt-0.5 leading-relaxed">
+            pyannote 分割 + 3D-Speaker 声纹嵌入，CPU 本地推理，音频不出本机
+          </div>
+        </div>
+        {data?.installed ? (
+          <button onClick={() => void remove()} className="text-muted hover:text-red-500 px-1 shrink-0" title="删除模型">
+            <Trash2 size={12} />
+          </button>
+        ) : downloading ? (
+          <span className="text-[11px] font-mono text-brand shrink-0 w-10 text-right">
+            {pct === null ? '…' : `${pct}%`}
+          </span>
+        ) : (
+          <button onClick={() => void download()} disabled={busy} className="btn-ghost h-7 px-2 text-[11px] shrink-0 disabled:opacity-40">
+            {busy ? <Loader2 size={11} className="animate-spin" /> : '下载'}
+          </button>
+        )}
+      </div>
+      {downloading && (
+        <div className="mt-2 h-1 rounded-full bg-line overflow-hidden">
+          <div className="h-full bg-brand transition-all" style={{ width: `${pct ?? 8}%` }} />
+        </div>
+      )}
+      {downloading && dl?.message && <div className="text-[10.5px] text-muted mt-1">{dl.message}</div>}
+      {dl?.status === 'error' && dl.message && (
+        <div className="text-[10.5px] text-red-500 mt-1 break-all">{dl.message}</div>
+      )}
+    </div>
+  );
+}
+
+/** 已录入的声纹角色；录入入口在录音详情页，这里只做查看和删除 */
+function VoiceProfiles() {
+  const toast = useToast();
+  const [profiles, setProfiles] = useState<VoiceProfile[]>([]);
+
+  const load = useCallback(async () => {
+    try {
+      setProfiles((await getVoiceProfiles()).profiles);
+    } catch {
+      /* 拉不到就保持上一份 */
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const remove = async (p: VoiceProfile) => {
+    if (!confirm(`删除角色「${p.name}」？删除后，已标注为这个名字的录音会恢复成「说话人 N」。`)) return;
+    try {
+      const r = await deleteVoiceProfile(p.id);
+      setProfiles(r.profiles);
+      toast.push('已删除角色', 'success');
+    } catch (e: any) {
+      toast.push(e?.message ?? '删除失败', 'error');
+    }
+  };
+
+  if (!profiles.length) {
+    return (
+      <div className="rounded-xl border border-dashed border-line px-3 py-2.5 text-[11px] text-muted leading-relaxed">
+        还没有声纹角色。打开一条已分离的录音，在「全文」上方点「这是我」或「命名…」即可录入；
+        录入后，之后的对话会自动显示名字，并判断你是否参与。
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-line px-3 py-2.5">
+      <div className="text-[12.5px] font-medium mb-1.5">声纹角色</div>
+      <div className="space-y-1.5">
+        {profiles.map((p) => (
+          <div key={p.id} className="flex items-center gap-2">
+            <span className="text-[12px] flex-1 min-w-0 truncate">
+              {p.name}
+              {p.isSelf && <span className="chip bg-brand/10 text-brand !px-1.5 !py-0 ml-1.5">我</span>}
+            </span>
+            <span className="text-[10.5px] text-muted/70 shrink-0">{p.sampleCount} 条样本</span>
+            <button
+              onClick={() => void remove(p)}
+              className="text-muted hover:text-red-500 px-1 shrink-0"
+              title="删除角色"
+            >
+              <Trash2 size={12} />
+            </button>
+          </div>
+        ))}
+      </div>
+      <div className="text-[10.5px] text-muted mt-2 leading-relaxed">
+        删除「我」后，录音不再判定你是否参与；重新在任意录音里点「这是我」即可恢复。
+      </div>
     </div>
   );
 }
@@ -746,310 +909,26 @@ function ProviderRow({
   );
 }
 
-function Section({ title, desc, icon: Icon, children, action }: any) {
-  return (
-    <section className="card p-4 md:p-5">
-      <div className="flex items-start justify-between gap-3 mb-4">
-        <div className="flex items-start gap-2.5">
-          <div className="h-8 w-8 rounded-lg bg-panel2 grid place-items-center shrink-0">
-            <Icon size={15} className="text-muted" />
-          </div>
-          <div>
-            <h2 className="text-[14px] font-semibold">{title}</h2>
-            {desc && <p className="text-[11.5px] text-muted mt-0.5 leading-relaxed">{desc}</p>}
-          </div>
-        </div>
-        {action}
-      </div>
-      {children}
-    </section>
-  );
-}
+/* 卡片外壳见 ./settings/Section.tsx（任务 / 日志 / 提示词几个标签共用） */
 
-/* ---------------- 数据存储（内置 SQLite / 外置 PostgreSQL） ---------------- */
+/* ---------------- 标签页 ---------------- */
 
-type PgForm = {
-  host: string;
-  port: string;
-  database: string;
-  user: string;
-  password: string;
-  sslmode: string;
-  schema: string;
-};
+type TabKey = 'providers' | 'mcp' | 'prefs' | 'prompts' | 'tasks' | 'logs' | 'data' | 'account';
 
-const EMPTY_PG: PgForm = {
-  host: '127.0.0.1',
-  port: '5432',
-  database: 'recall',
-  user: 'postgres',
-  password: '',
-  sslmode: 'prefer',
-  schema: 'public',
-};
+const TABS: { key: TabKey; label: string; icon: any; hint: string }[] = [
+  { key: 'providers', label: 'AI 服务', icon: BrainCircuit, hint: '语音识别与语言模型' },
+  { key: 'mcp', label: 'MCP 工具', icon: Plug, hint: '接入外部 MCP 服务，对话可用、总结可推送' },
+  { key: 'prefs', label: '录音与纪要', icon: Settings2, hint: '切片、风格、语言、主题' },
+  { key: 'prompts', label: '提示词', icon: Sparkles, hint: '日报 / 周报 / 月报 / 年报分别附加' },
+  { key: 'tasks', label: '任务', icon: ListChecks, hint: '正在跑什么、排队多少' },
+  { key: 'logs', label: '日志', icon: FileText, hint: '后端实时输出与异常' },
+  { key: 'data', label: '数据与设备', icon: Cpu, hint: '开放 API、MCP 服务、硬件设备' },
+  { key: 'account', label: '账号', icon: Power, hint: '密码与登录状态' },
+];
 
-function StorageSection() {
-  const toast = useToast();
-  const navigate = useNavigate();
-  const [cfg, setCfg] = useState<DbConfig | null>(null);
-  const [status, setStatus] = useState<DbStatus | null>(null);
-  const [mode, setMode] = useState<DbDriver>('sqlite');
-  const [f, setF] = useState<PgForm>(EMPTY_PG);
-  const [testing, setTesting] = useState(false);
-  const [applying, setApplying] = useState(false);
-  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
-
-  const load = useCallback(async () => {
-    try {
-      const r = await getDbConfig();
-      setCfg(r.config);
-      setStatus(r.status);
-      setMode(r.config.driver);
-      setF({
-        host: r.config.host,
-        port: String(r.config.port),
-        database: r.config.database,
-        user: r.config.user,
-        password: '',
-        sslmode: r.config.sslmode,
-        schema: r.config.schema,
-      });
-    } catch (e: any) {
-      toast.push(e?.message ?? '读取数据库配置失败', 'error');
-    }
-  }, [toast]);
-
-  useEffect(() => { void load(); }, [load]);
-
-  const payload = useMemo(
-    () => ({
-      driver: mode,
-      host: f.host.trim(),
-      port: Number(f.port) || 5432,
-      database: f.database.trim(),
-      user: f.user.trim(),
-      password: f.password,
-      sslmode: f.sslmode,
-      schema: f.schema.trim(),
-    }),
-    [mode, f],
-  );
-
-  const dirty =
-    !!cfg &&
-    (mode !== cfg.driver ||
-      (mode === 'postgres' &&
-        (payload.host !== cfg.host ||
-          payload.port !== cfg.port ||
-          payload.database !== cfg.database ||
-          payload.user !== cfg.user ||
-          payload.sslmode !== cfg.sslmode ||
-          payload.schema !== cfg.schema ||
-          !!payload.password)));
-
-  const test = async () => {
-    setTesting(true);
-    setResult(null);
-    try {
-      const r = await testDbConnection(payload);
-      setResult({ ok: r.ok, message: r.ok ? `${r.message}${r.serverVersion ? ` · ${r.serverVersion}` : ''}` : r.message });
-    } catch (e: any) {
-      setResult({ ok: false, message: e?.message ?? '测试失败' });
-    } finally {
-      setTesting(false);
-    }
-  };
-
-  const apply = async () => {
-    const target = mode === 'sqlite' ? '内置 SQLite' : `PostgreSQL（${payload.host}:${payload.port}/${payload.database}）`;
-    if (!window.confirm(
-      `确认切换到${target}？\n\n`
-      + '注意：不会迁移任何数据。新数据库里没有账号、录音记录和纪要，\n'
-      + '需要重新创建/登录账号；音频文件仍保留在 data/uploads。',
-    )) return;
-
-    setApplying(true);
-    setResult(null);
-    try {
-      const r = await applyDbConfig(payload);
-      toast.push(r.message, 'success');
-      setCfg(r.config);
-      setStatus(r.status);
-      if (r.needsAdmin) {
-        navigate('/setup');
-        return;
-      }
-      // 账号体系可能整体变了，刷新一次最稳妥
-      window.setTimeout(() => window.location.reload(), 800);
-    } catch (e: any) {
-      toast.push(e?.message ?? '切换失败', 'error');
-    } finally {
-      setApplying(false);
-    }
-  };
-
-  return (
-    <Section
-      title="数据存储"
-      desc="内置 SQLite 只适合调试；正式使用时请接外置 PostgreSQL"
-      icon={Database}
-      action={
-        status && (
-          <span
-            className={cn(
-              'chip !px-2 !py-0 shrink-0',
-              status.connected
-                ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
-                : 'bg-red-500/10 text-red-500',
-            )}
-          >
-            {status.connected ? '已连接' : '连接失败'}
-          </span>
-        )
-      }
-    >
-      <div className="text-[11px] text-muted mb-3 break-all">
-        当前：<span className="font-mono text-ink/80">{status?.target ?? '读取中…'}</span>
-      </div>
-
-      <div className="grid sm:grid-cols-2 gap-2">
-        <button
-          onClick={() => setMode('sqlite')}
-          disabled={cfg?.fromEnv}
-          className={cn(
-            'text-left rounded-xl border px-3 py-2.5 transition-all disabled:opacity-50',
-            mode === 'sqlite' ? 'border-brand bg-soft/60' : 'border-line hover:border-brand/30 hover:bg-panel2',
-          )}
-        >
-          <div className="flex items-center gap-1.5">
-            <HardDrive size={13} className={mode === 'sqlite' ? 'text-brand' : 'text-muted'} />
-            <span className="text-[12.5px] font-medium flex-1">内置 SQLite</span>
-            {mode === 'sqlite' && <Check size={13} className="text-brand" />}
-          </div>
-          <div className="text-[11px] text-muted mt-1 leading-relaxed">零配置、单文件；仅适合调试与单人使用</div>
-        </button>
-        <button
-          onClick={() => setMode('postgres')}
-          disabled={cfg?.fromEnv}
-          className={cn(
-            'text-left rounded-xl border px-3 py-2.5 transition-all disabled:opacity-50',
-            mode === 'postgres' ? 'border-brand bg-soft/60' : 'border-line hover:border-brand/30 hover:bg-panel2',
-          )}
-        >
-          <div className="flex items-center gap-1.5">
-            <Database size={13} className={mode === 'postgres' ? 'text-brand' : 'text-muted'} />
-            <span className="text-[12.5px] font-medium flex-1">外置 PostgreSQL</span>
-            {mode === 'postgres' && <Check size={13} className="text-brand" />}
-          </div>
-          <div className="text-[11px] text-muted mt-1 leading-relaxed">独立数据库服务；推荐正式部署与多人使用</div>
-        </button>
-      </div>
-
-      {mode === 'postgres' ? (
-        <div className="mt-3 space-y-3">
-          <div className="grid grid-cols-3 gap-2.5">
-            <div className="col-span-2">
-              <label className="label">主机</label>
-              <input className="field font-mono text-[12.5px]" value={f.host} disabled={cfg?.fromEnv}
-                onChange={(e) => setF({ ...f, host: e.target.value })} placeholder="127.0.0.1 或 db.example.com" />
-            </div>
-            <div>
-              <label className="label">端口</label>
-              <input className="field font-mono text-[12.5px]" value={f.port} inputMode="numeric" disabled={cfg?.fromEnv}
-                onChange={(e) => setF({ ...f, port: e.target.value.replace(/\D/g, '') })} placeholder="5432" />
-            </div>
-          </div>
-          <div className="grid sm:grid-cols-2 gap-2.5">
-            <div>
-              <label className="label">数据库名</label>
-              <input className="field font-mono text-[12.5px]" value={f.database} disabled={cfg?.fromEnv}
-                onChange={(e) => setF({ ...f, database: e.target.value })} placeholder="recall" />
-            </div>
-            <div>
-              <label className="label">用户名</label>
-              <input className="field font-mono text-[12.5px]" value={f.user} disabled={cfg?.fromEnv}
-                onChange={(e) => setF({ ...f, user: e.target.value })} placeholder="postgres" />
-            </div>
-          </div>
-          <div className="grid sm:grid-cols-2 gap-2.5">
-            <div>
-              <label className="label">
-                密码
-                {cfg?.hasPassword && cfg.driver === 'postgres' && (
-                  <span className="ml-2 font-normal text-emerald-500">已保存，留空不修改</span>
-                )}
-              </label>
-              <input className="field font-mono text-[12.5px]" type="password" value={f.password} disabled={cfg?.fromEnv}
-                onChange={(e) => setF({ ...f, password: e.target.value })}
-                placeholder={cfg?.hasPassword ? '••••••••' : '数据库密码'} />
-            </div>
-            <div>
-              <label className="label">SSL 模式</label>
-              <select className="field text-[12.5px]" value={f.sslmode} disabled={cfg?.fromEnv}
-                onChange={(e) => setF({ ...f, sslmode: e.target.value })}>
-                <option value="prefer">prefer（默认）</option>
-                <option value="disable">disable（本机/内网）</option>
-                <option value="require">require（强制加密）</option>
-                <option value="verify-full">verify-full（校验证书）</option>
-              </select>
-            </div>
-          </div>
-          <div>
-            <label className="label">Schema</label>
-            <input className="field font-mono text-[12.5px]" value={f.schema} disabled={cfg?.fromEnv}
-              onChange={(e) => setF({ ...f, schema: e.target.value })} placeholder="public" />
-          </div>
-          <p className="text-[11px] text-muted leading-relaxed">
-            连接成功后会自动探测：库不存在就建库，表不存在就建表，已有数据不会覆盖。
-          </p>
-        </div>
-      ) : (
-        <div className="mt-3 rounded-xl bg-panel2 px-3 py-2.5 text-[11.5px] text-muted leading-relaxed break-all">
-          数据文件：<span className="font-mono text-ink/80">{cfg?.sqlitePath ?? 'data/recall.db'}</span>
-          <br />
-          SQLite 只适合单人调试：并发写会锁库，也没有备份与远程访问能力。
-        </div>
-      )}
-
-      {cfg?.fromEnv && (
-        <div className="mt-3 rounded-xl border border-brand/25 bg-brand/5 px-3 py-2.5 text-[11px] leading-relaxed text-brand break-all">
-          当前由环境变量 <span className="font-mono">DATABASE_URL</span> 指定数据库，界面上的配置只读。
-        </div>
-      )}
-
-      <div className="mt-3 rounded-xl border border-amber-500/25 bg-amber-500/5 px-3 py-2.5 flex items-start gap-2">
-        <AlertTriangle size={13} className="text-amber-500 mt-0.5 shrink-0" />
-        <div className="text-[11px] leading-relaxed text-amber-700 dark:text-amber-300">
-          切换数据库<strong className="font-semibold">不会迁移数据</strong>：新库里没有账号、录音记录和纪要，
-          需要用新库的账号重新登录；音频文件仍保留在 <span className="font-mono">data/uploads</span>。
-        </div>
-      </div>
-
-      {result && (
-        <div
-          className={cn(
-            'mt-3 rounded-xl px-3 py-2.5 flex items-start gap-2 text-[11.5px] leading-relaxed',
-            result.ok ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-red-500/10 text-red-500',
-          )}
-        >
-          {result.ok ? <CheckCircle2 size={13} className="mt-0.5 shrink-0" /> : <AlertCircle size={13} className="mt-0.5 shrink-0" />}
-          <span className="break-words">{result.message}</span>
-        </div>
-      )}
-
-      <div className="mt-3 flex gap-2">
-        {mode === 'postgres' && (
-          <button onClick={test} disabled={testing || cfg?.fromEnv} className="btn-outline h-9 px-3 text-[12.5px]">
-            {testing ? <Loader2 size={14} className="animate-spin" /> : <Server size={14} />} 测试连接
-          </button>
-        )}
-        <button onClick={apply} disabled={applying || !dirty || cfg?.fromEnv} className="btn-primary h-9 px-4 text-[12.5px]">
-          {applying ? <Loader2 size={14} className="animate-spin" /> : <Database size={14} />} 保存并切换
-        </button>
-      </div>
-    </Section>
-  );
-}
+const TAB_KEYS = new Set(TABS.map((t) => t.key));
+const normalizeTab = (raw: string | null): TabKey =>
+  raw && TAB_KEYS.has(raw as TabKey) ? (raw as TabKey) : 'providers';
 
 export default function SettingsPage() {
   const { user, settings, patchSettings, logout } = useAuth();
@@ -1066,29 +945,20 @@ export default function SettingsPage() {
   const [bindName, setBindName] = useState('');
   const [binding, setBinding] = useState(false);
   const [pwd, setPwd] = useState('');
+  const [pwd2, setPwd2] = useState('');
   const [savingPwd, setSavingPwd] = useState(false);
-  const [promptDraft, setPromptDraft] = useState('');
-  const [savingPrompt, setSavingPrompt] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
-  // 设置从服务端回来后同步一次编辑框，之后以编辑框为准
-  useEffect(() => {
-    setPromptDraft(settings?.summaryPrompt ?? '');
-  }, [settings?.summaryPrompt]);
-
-  const promptDirty = promptDraft.trim() !== (settings?.summaryPrompt ?? '').trim();
-
-  const saveSummaryPrompt = async () => {
-    setSavingPrompt(true);
-    try {
-      await patchSettings({ summaryPrompt: promptDraft.trim() });
-      toast.push(promptDraft.trim() ? '已保存，之后生成的纪要会带上这些要求' : '已清空，改回内置提示词', 'success');
-    } catch (e: any) {
-      toast.push(e?.message ?? '保存失败', 'error');
-    } finally {
-      setSavingPrompt(false);
-    }
+  const [params, setParams] = useSearchParams();
+  const tab = normalizeTab(params.get('tab'));
+  const setTab = (next: TabKey) => {
+    const p = new URLSearchParams(params);
+    p.set('tab', next);
+    setParams(p, { replace: true });
   };
+
+  // 运行中的任务：设置在顶部常驻一个提示，任务标签里看细节
+  const { board, error: taskError, loading: taskLoading, refresh: refreshTasks } = useTaskBoard(5000);
 
   const loadDevices = useCallback(async () => {
     try {
@@ -1243,11 +1113,14 @@ export default function SettingsPage() {
 
   const changePwd = async () => {
     if (pwd.length < 6) return toast.push('新密码至少 6 位', 'error');
+    if (!pwd2) return toast.push('请再输入一遍新密码', 'error');
+    if (pwd !== pwd2) return toast.push('两次输入的密码不一致', 'error');
     setSavingPwd(true);
     try {
       await api('/api/auth/me', { method: 'PATCH', body: { password: pwd } });
       toast.push('密码已修改', 'success');
       setPwd('');
+      setPwd2('');
     } catch (e: any) {
       toast.push(e?.message ?? '修改失败', 'error');
     } finally {
@@ -1260,12 +1133,65 @@ export default function SettingsPage() {
   const origin = window.location.origin;
 
   return (
-    <div className="max-w-3xl mx-auto px-4 md:px-8 py-6 md:py-10 space-y-4">
-      <div>
-        <h1 className="text-[24px] md:text-[28px] font-semibold tracking-tight">设置</h1>
-        <p className="text-[12.5px] text-muted mt-1">配置你自己的 AI 服务，数据全部保存在本机</p>
+    <div className="max-w-4xl mx-auto px-4 md:px-8 py-6 md:py-10">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-[24px] md:text-[28px] font-semibold tracking-tight">设置</h1>
+          <p className="text-[12.5px] text-muted mt-1">配置你自己的 AI 服务，数据全部保存在本机</p>
+        </div>
+        {!!board?.counts.running && (
+          <button
+            onClick={() => setTab('tasks')}
+            className="mt-1 shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-full bg-brand/10 text-brand text-[11.5px] hover:bg-brand/15"
+          >
+            <Loader2 size={12} className="animate-spin" />
+            {board.counts.running} 个任务在跑
+          </button>
+        )}
+        {!board?.counts.running && !!board?.counts.queued && (
+          <button
+            onClick={() => setTab('tasks')}
+            className="mt-1 shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 text-[11.5px] hover:bg-amber-500/15"
+          >
+            {board.counts.queued} 个任务排队
+          </button>
+        )}
       </div>
 
+      {/* 标签栏：手机上横向滚动，桌面上平铺 */}
+      <div className="mt-4 -mx-4 px-4 md:mx-0 md:px-0 overflow-x-auto">
+        <div className="flex items-center gap-1 min-w-max md:min-w-0 md:flex-wrap">
+          {TABS.map((t) => {
+            const Icon = t.icon;
+            const active = tab === t.key;
+            return (
+              <button
+                key={t.key}
+                onClick={() => setTab(t.key)}
+                title={t.hint}
+                className={cn(
+                  'h-9 px-3 rounded-xl text-[12.5px] font-medium inline-flex items-center gap-1.5 transition-colors shrink-0',
+                  active
+                    ? 'bg-soft text-brand'
+                    : 'text-muted hover:text-ink hover:bg-panel2',
+                )}
+              >
+                <Icon size={13} />
+                {t.label}
+                {t.key === 'tasks' && !!board?.counts.running && (
+                  <span className="ml-0.5 min-w-[16px] h-4 px-1 rounded-full bg-brand text-white text-[10px] grid place-items-center tabular-nums">
+                    {board.counts.running}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="mt-4 space-y-4">
+      {tab === 'providers' && (
+        <>
       {/* ASR */}
       <Section
         title="语音识别服务"
@@ -1308,8 +1234,13 @@ export default function SettingsPage() {
           )}
         </div>
       </Section>
+        </>
+      )}
 
-      {/* 录音偏好 */}
+      {tab === 'mcp' && <McpTab />}
+
+      {tab === 'prefs' && (
+      <>{/* 录音偏好 */}
       <Section title="录音与纪要" desc="影响录音切片方式与自动整理行为" icon={Settings2}>
         <div className="space-y-4">
           <div className="flex items-center justify-between gap-4">
@@ -1318,11 +1249,11 @@ export default function SettingsPage() {
               <div className="text-[11px] text-muted mt-0.5">越短转写越快出字，越长请求越少</div>
             </div>
             <select
-              value={settings?.chunkSeconds ?? 30}
+              value={settings?.chunkSeconds ?? 120}
               onChange={(e) => patch({ chunkSeconds: Number(e.target.value) })}
               className="field w-auto h-9 pr-8 text-[12.5px]"
             >
-              {[15, 30, 45, 60, 90].map((s) => (
+              {[15, 30, 45, 60, 90, 120].map((s) => (
                 <option key={s} value={s}>{s} 秒</option>
               ))}
             </select>
@@ -1333,21 +1264,26 @@ export default function SettingsPage() {
               <div className="text-[13px]">自动生成纪要</div>
               <div className="text-[11px] text-muted mt-0.5">录音转写完成后自动调用语言模型整理</div>
             </div>
-            <button
-              onClick={() => patch({ autoSummarize: !(settings?.autoSummarize ?? true) })}
-              className={cn(
-                'relative h-6 w-11 rounded-full transition-colors shrink-0',
-                settings?.autoSummarize ? 'bg-brand' : 'bg-line',
-              )}
-            >
-              <span
-                className={cn(
-                  'absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all',
-                  settings?.autoSummarize ? 'left-[22px]' : 'left-0.5',
-                )}
-              />
-            </button>
+            <Switch
+              checked={settings?.autoSummarize ?? true}
+              onChange={(next) => patch({ autoSummarize: next })}
+            />
           </div>
+
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <div className="text-[13px]">说话人分离</div>
+              <div className="text-[11px] text-muted mt-0.5">
+                本地识别多人对话，转写里标出「说话人 1/2/…」；音频不出本机
+              </div>
+            </div>
+            <Switch
+              checked={settings?.speakerDiarization ?? false}
+              onChange={(next) => patch({ speakerDiarization: next })}
+            />
+          </div>
+          {settings?.speakerDiarization && <DiarizationModel />}
+          {settings?.speakerDiarization && <VoiceProfiles />}
 
           <div className="flex items-center justify-between gap-4">
             <div>
@@ -1367,31 +1303,16 @@ export default function SettingsPage() {
             </select>
           </div>
 
-          <div>
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="text-[13px]">
-                  自定义整理提示词 <span className="text-[11px] text-muted font-normal">（可选）</span>
-                </div>
-                <div className="text-[11px] text-muted mt-0.5">
-                  留空则用上方风格的内置提示词；填写后作为额外要求追加，JSON 输出格式仍由系统保证
-                </div>
+          <div className="rounded-xl border border-line bg-panel2/50 px-3 py-2.5 flex items-start justify-between gap-3">
+            <div>
+              <div className="text-[12.5px]">自定义提示词</div>
+              <div className="text-[11px] text-muted mt-0.5 leading-relaxed">
+                单条录音、日报、周报、月报、年报的附加要求已经拆到「提示词」标签里分别设置
               </div>
-              <button
-                onClick={() => void saveSummaryPrompt()}
-                disabled={!promptDirty || savingPrompt}
-                className="btn-outline h-8 px-3 text-[12px] shrink-0 disabled:opacity-40"
-              >
-                {savingPrompt ? <Loader2 size={13} className="animate-spin" /> : '保存'}
-              </button>
             </div>
-            <textarea
-              value={promptDraft}
-              onChange={(e) => setPromptDraft(e.target.value.slice(0, 2000))}
-              placeholder="例如：每条结论后面标注是发言人说的；技术术语保留英文原文；语气口语化一点；不要输出待办小节"
-              className="field w-full mt-2 min-h-[88px] text-[12px] leading-relaxed resize-y"
-            />
-            <div className="mt-1 text-right text-[10.5px] text-muted/70">{promptDraft.length}/2000</div>
+            <button onClick={() => setTab('prompts')} className="btn-outline h-8 px-2.5 text-[12px] shrink-0">
+              去设置
+            </button>
           </div>
 
           <div className="flex items-center justify-between gap-4">
@@ -1436,10 +1357,19 @@ export default function SettingsPage() {
           </div>
         </div>
       </Section>
+      </>
+      )}
 
-      {/* 数据存储 */}
-      <StorageSection />
+      {tab === 'prompts' && <PromptsTab />}
 
+      {tab === 'tasks' && (
+        <TasksTab board={board} loading={taskLoading} error={taskError} onRefresh={refreshTasks} />
+      )}
+
+      {tab === 'logs' && <LogsTab />}
+
+      {tab === 'data' && (
+        <>
       {/* 开放 API */}
       <Section
         title="开放 API"
@@ -1488,6 +1418,9 @@ export default function SettingsPage() {
           </button>
         </div>
       </Section>
+
+      {/* 对外提供 MCP 服务 */}
+      <McpServiceCard />
 
       {/* 硬件设备 */}
       <Section
@@ -1658,22 +1591,44 @@ POST ${origin}/api/open/ingest
           </p>
         </div>
       </Section>
+        </>
+      )}
 
+      {tab === 'account' && (
+        <>
       {/* 账号 */}
       <Section title="账号" desc={`当前登录：${user?.username}`} icon={Power}>
         <div className="space-y-3">
           <div>
             <label className="label">修改密码</label>
-            <div className="flex gap-2">
+            <div className="space-y-2">
               <input
-                className="field flex-1"
+                className="field w-full"
                 type="password"
                 value={pwd}
                 onChange={(e) => setPwd(e.target.value)}
-                placeholder="输入新密码（至少 6 位）"
+                placeholder="新密码（至少 6 位）"
+                autoComplete="new-password"
               />
-              <button onClick={changePwd} disabled={savingPwd || !pwd} className="btn-outline h-10 px-3 shrink-0">
-                {savingPwd ? <Loader2 size={14} className="animate-spin" /> : '保存'}
+              <input
+                className="field w-full"
+                type="password"
+                value={pwd2}
+                onChange={(e) => setPwd2(e.target.value)}
+                placeholder="再输入一遍新密码"
+                autoComplete="new-password"
+              />
+              {!!pwd2 && pwd !== pwd2 && (
+                <div className="flex items-center gap-1 text-[11px] text-red-500">
+                  <AlertCircle size={11} className="shrink-0" /> 两次输入的密码不一致
+                </div>
+              )}
+              <button
+                onClick={changePwd}
+                disabled={savingPwd || !pwd || !pwd2 || pwd !== pwd2}
+                className="btn-outline h-9 px-3 text-[12.5px]"
+              >
+                {savingPwd ? <Loader2 size={14} className="animate-spin" /> : '保存新密码'}
               </button>
             </div>
           </div>
@@ -1682,6 +1637,9 @@ POST ${origin}/api/open/ingest
           </button>
         </div>
       </Section>
+        </>
+      )}
+      </div>
 
       <div className="text-center text-[11px] text-muted/70 pt-2 pb-4">
         忆录 · 本地部署的录音记忆库

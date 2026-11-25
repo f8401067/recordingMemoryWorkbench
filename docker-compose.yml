@@ -1,4 +1,24 @@
 services:
+  # PostgreSQL：数据库只支持这一种，连接信息写在配置文件里（界面不再提供切换）
+  postgres:
+    image: postgres:16
+    container_name: recall-postgres
+    environment:
+      POSTGRES_DB: recall
+      POSTGRES_USER: recall
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-recall}
+      # 中文内容排序/大小写行为更符合直觉
+      LANG: C.UTF-8
+    volumes:
+      - ./pg-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U recall -d recall"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
   recall:
     build:
       context: .
@@ -16,10 +36,13 @@ services:
       ADMIN_USER: ${ADMIN_USER:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
       ASR_CONCURRENCY: ${ASR_CONCURRENCY:-2}
-      # 可选：想用外置 PostgreSQL 时打开下面这行（也可以在网页「设置 → 数据存储」里填，
-      # 配置会写到 ./data/config.json；环境变量优先级更高，会把界面变成只读）
-      # 更省事的做法：docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
-      # DATABASE_URL: postgresql://recall:${POSTGRES_PASSWORD:-recall}@postgres:5432/recall?sslmode=disable
+      # 数据库连接：默认连下面的 postgres 服务。
+      # 想连已有的外部 PostgreSQL，就在项目根目录建一个 .env 写上（host.docker.internal 指向宿主机）
+      #   DATABASE_URL=postgresql://用户:密码@host.docker.internal:5432/recall?sslmode=disable
+      DATABASE_URL: ${DATABASE_URL:-postgresql://recall:${POSTGRES_PASSWORD:-recall}@postgres:5432/recall?sslmode=disable}
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test:
@@ -31,5 +54,3 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
-
-  # 想连 PostgreSQL 见 docker-compose.postgres.yml（用 -f 叠加即可，不用改这个文件）

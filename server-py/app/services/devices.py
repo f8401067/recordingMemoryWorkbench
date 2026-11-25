@@ -7,7 +7,7 @@ import threading
 import time
 import traceback
 import wave
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +25,8 @@ DEVICE_SOURCE = "device"
 CODE_RE = re.compile(r"^\d{6}$")          # 设备编号：6 位纯数字，方便播报和口述
 LEGACY_CODE_RE = re.compile(r"^[0-9A-F]{8}$")  # 老版本 8 位十六进制，继续兼容
 CLAIM_TTL_MIN = 30    # 设备轮询超过这么久没动静，就从"待配对"里消失
+# 单账号服务器自动认领设备时，最多自动挂这么多台
+AUTO_CLAIM_MAX_DEVICES = 8
 
 # 中文数字 / 口头念法，语音播报后口述输入也能认
 _CN_DIGITS = {
@@ -195,10 +197,42 @@ def _clean_code(code: str | None) -> str:
     raise ValueError("设备编号是 6 位数字，例如 903471")
 
 
+def _bound_payload(dev: dict) -> dict:
+    return {
+        "status": "bound",
+        "token": dev["token"],
+        "deviceId": dev["id"],
+        "name": dev["name"],
+        "gapSec": dev.get("gap_sec") or GAP_DEFAULT,
+        "idleSec": dev.get("idle_sec") or IDLE_DEFAULT,
+    }
+
+
+def _auto_claim_user() -> dict | None:
+    """单账号的自托管服务器：没见过的编号直接认领，不需要人工绑定。
+
+    设备恢复出厂 / 服务端换过库之后，token 在设备侧就没了。以前这种时候得去
+    后台"输编号绑定"甚至"重置 token"，其实是多余的：库里只有一个账号时，
+    这台服务器上不存在"设备该归谁"的问题，直接建条下发即可。
+
+    多账号部署保持原样（返回 None，走人工认领），否则谁都能把自己的设备
+    塞进别人的账号里。
+    """
+    users = all_("SELECT * FROM users")
+    if len(users) != 1:
+        return None
+    user = users[0]
+    row = one("SELECT COUNT(*) AS n FROM devices WHERE user_id = ?", (user["id"],))
+    if row and int(row.get("n") or 0) >= AUTO_CLAIM_MAX_DEVICES:
+        return None
+    return user
+
+
 def poll_pair(code: str, name: str | None, firmware: str | None, ip: str | None) -> dict:
     """设备开机后带着自己的编号轮询这个接口。
 
-    未绑定 → pending；已被后台认领 → 直接下发 token（NVS 掉了也能自愈）。
+    未绑定 → pending；已被后台认领 → 直接下发 token（NVS 掉了也能自愈）；
+    单账号服务器上遇到全新编号 → 自动建档下发 token（设备侧重置后自愈）。
     """
     c = _clean_code(code)
 
@@ -209,14 +243,34 @@ def poll_pair(code: str, name: str | None, firmware: str | None, ip: str | None)
             (now_iso(), now_iso(), dev["id"]),
         )
         execute("DELETE FROM device_claims WHERE code = ?", (c,))
-        return {
-            "status": "bound",
-            "token": dev["token"],
-            "deviceId": dev["id"],
-            "name": dev["name"],
-            "gapSec": dev.get("gap_sec") or GAP_DEFAULT,
-            "idleSec": dev.get("idle_sec") or IDLE_DEFAULT,
-        }
+        return _bound_payload(dev)
+
+    if dev is None:
+        owner = _auto_claim_user()
+        if owner is not None:
+            _insert_device(owner["id"], c, name)
+            execute("DELETE FROM device_claims WHERE code = ?", (c,))
+            fresh = one("SELECT * FROM devices WHERE code = ?", (c,))
+            if fresh is not None:
+                execute(
+                    "UPDATE devices SET last_poll_at = ?, last_seen_at = ? WHERE id = ?",
+                    (now_iso(), now_iso(), fresh["id"]),
+                )
+                dev = one("SELECT * FROM devices WHERE id = ?", (fresh["id"],)) or fresh
+                return _bound_payload(dev)
+    elif not dev.get("token"):
+        # 有记录但没 token（老库补列、或某次重置只擦了 token）：直接补发一个，
+        # 别让设备卡在"等待后台绑定"上
+        owner = _auto_claim_user()
+        if owner is not None and dev["user_id"] == owner["id"]:
+            execute(
+                """UPDATE devices SET token = ?, bound_at = COALESCE(bound_at, ?),
+                   last_poll_at = ?, last_seen_at = ? WHERE id = ?""",
+                (new_token(), now_iso(), now_iso(), now_iso(), dev["id"]),
+            )
+            fresh = one("SELECT * FROM devices WHERE id = ?", (dev["id"],))
+            if fresh is not None:
+                return _bound_payload(fresh)
 
     ts = now_iso()
     execute(
@@ -268,6 +322,30 @@ def _unique_name(user_id: str, base: str) -> str:
     return name
 
 
+def _insert_device(user_id: str, code: str, name: str | None) -> str:
+    """新建一台设备并下发 token，返回 token。名字冲突时自动加 -2/-3 后缀。"""
+    token = new_token()
+    execute(
+        """INSERT INTO devices
+           (id, user_id, name, code, token, gap_sec, idle_sec, session_chunks,
+            bound_at, last_poll_at, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)""",
+        (
+            uid("dev_"),
+            user_id,
+            _unique_name(user_id, name or code),
+            code,
+            token,
+            GAP_DEFAULT,
+            IDLE_DEFAULT,
+            now_iso(),
+            now_iso(),
+            now_iso(),
+        ),
+    )
+    return token
+
+
 def bind_device(user_id: str, code: str, name: str | None = None) -> dict:
     """后台输入设备编号完成绑定，并下发 token。"""
     c = _clean_code(code)
@@ -285,26 +363,7 @@ def bind_device(user_id: str, code: str, name: str | None = None) -> dict:
         )
     else:
         guessed = name or (claim or {}).get("name") or c
-        dev_id = uid("dev_")
-        token = new_token()
-        execute(
-            """INSERT INTO devices
-               (id, user_id, name, code, token, gap_sec, idle_sec, session_chunks,
-                bound_at, last_poll_at, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)""",
-            (
-                dev_id,
-                user_id,
-                _unique_name(user_id, guessed),
-                c,
-                token,
-                GAP_DEFAULT,
-                IDLE_DEFAULT,
-                now_iso(),
-                now_iso(),
-                now_iso(),
-            ),
-        )
+        token = _insert_device(user_id, c, guessed)
 
     execute("DELETE FROM device_claims WHERE code = ?", (c,))
     fresh = one("SELECT * FROM devices WHERE code = ?", (c,))
@@ -333,8 +392,10 @@ def _create_session(user_id: str, device: dict, title: str | None, started_at: s
     rid = uid("rec_")
     ts = started_at or now_iso()
     name = device["name"]
-    now = datetime.now()
-    auto_title = f"{name} {now.month}/{now.day} {now:%H:%M}"
+    # 标题里的时间跟着"录制时间"走：补传昨天的录音不该标成今天的 19:30
+    base = _parse(ts) or datetime.now(timezone.utc)
+    local = base.astimezone()
+    auto_title = f"{name} {local.month}/{local.day} {local:%H:%M}"
     execute(
         """INSERT INTO recordings
            (id, user_id, title, status, source, language, started_at, created_at)
@@ -354,7 +415,8 @@ def close_session(device: dict, reason: str = "idle") -> str | None:
     """结束设备当前会话：清空指针后走正常的收尾流程（含自动纪要）。"""
     rec_id = device.get("open_recording_id")
     execute(
-        """UPDATE devices SET open_recording_id = NULL, last_chunk_at = NULL, session_chunks = 0
+        """UPDATE devices SET open_recording_id = NULL, last_chunk_at = NULL,
+           last_rec_end = NULL, session_chunks = 0
            WHERE id = ?""",
         (device["id"],),
     )
@@ -385,6 +447,30 @@ def close_idle_devices() -> int:
 # ------------------------------------------------------------------ #
 # 收音频
 # ------------------------------------------------------------------ #
+def _chunk_gap(
+    rec_at: datetime | None,
+    prev_rec_end: datetime | None,
+    last_chunk_at: datetime | None,
+    now: datetime,
+) -> float | None:
+    """本片和上一片之间隔了多久（秒）。None = 没有参照，只能算新会话。
+
+    为什么不能只看到达时间：设备出门攒了一整天的录音，回家连上 WiFi 后
+    几十个分片几秒钟内全部推完，到达间隔永远是 1~2 秒，远小于 gapSec，
+    一整天会被并成一条记录（时间轴、纪要、日报全都错位）。
+
+    所以设备带了 recordedAt 就用"本片开始录制 − 上一片结束录制"，
+    没带才退回服务器到达时间（老固件行为不变）。
+    """
+    if rec_at is not None:
+        if prev_rec_end is not None:
+            return (rec_at - prev_rec_end).total_seconds()
+        return None
+    if last_chunk_at is None:
+        return None
+    return (now - last_chunk_at).total_seconds()
+
+
 def ingest(
     user_id: str,
     device_name: str | None = None,
@@ -400,6 +486,7 @@ def ingest(
     rate: int = 16000,
     channels: int = 1,
     device: dict | None = None,
+    chunk_key: str | None = None,
 ) -> dict:
     """设备推一段音频：服务端判断是接着上一段，还是新的一次会话。
 
@@ -408,6 +495,38 @@ def ingest(
     if device is not None and device.get("user_id") != user_id:
         raise PermissionError("设备不属于该账号")
     device = device or get_or_create(user_id, device_name or "default")
+
+    # 幂等：同一个分片重传（上次响应丢了、超时重试）直接返回原来的结果，
+    # 既不重复插入，也不把音频写第二遍。
+    if chunk_key:
+        dup = one(
+            """SELECT c.* FROM chunks c JOIN recordings r ON r.id = c.recording_id
+               WHERE r.user_id = ? AND c.chunk_key = ? LIMIT 1""",
+            (user_id, chunk_key),
+        )
+        if dup:
+            rec = one("SELECT * FROM recordings WHERE id = ?", (dup["recording_id"],))
+            again = all_(
+                "SELECT seq, duration_ms, start_offset_ms FROM chunks WHERE recording_id = ?",
+                (dup["recording_id"],),
+            )
+            total = max(
+                ((int(c.get("start_offset_ms") or 0) + int(c.get("duration_ms") or 0)) for c in again),
+                default=int(dup.get("duration_ms") or 0),
+            )
+            return {
+                "ok": True,
+                "recordingId": dup["recording_id"],
+                "title": (rec or {}).get("title") or "",
+                "chunkId": dup["id"],
+                "chunkSeq": dup["seq"],
+                "newSession": False,
+                "gapSec": 0,
+                "sessionChunks": len(again),
+                "sessionDurationMs": total,
+                "durationMs": int(dup.get("duration_ms") or 0),
+                "duplicate": True,
+            }
 
     # 设备可临时覆盖阈值
     overrides: list[str] = []
@@ -432,23 +551,35 @@ def ingest(
         if rec is None:
             execute(
                 """UPDATE devices SET open_recording_id = NULL, last_chunk_at = NULL,
-                   session_chunks = 0 WHERE id = ?""",
+                   last_rec_end = NULL, session_chunks = 0 WHERE id = ?""",
                 (device["id"],),
             )
+
+    # 设备端录制时间。设备攒了一整天再补传时，几十个分片几秒钟内全部到达，
+    # 按到达时间算间隔永远是 1~2 秒，会把全天并成一条记录 —— 所以有 recordedAt
+    # 就按真实录制间隔切会话，没有才退回到达时间（老固件行为不变）。
+    # 时钟偏差超过 30 天视为没校准，忽略，避免把会话切得乱七八糟。
+    rec_at = _parse(recorded_at)
+    if rec_at is not None and abs((now - rec_at).total_seconds()) > 30 * 86400:
+        rec_at = None
 
     # 判断是不是新的一次「聊天」：距上一段太久就断开
     new_session = False
     gap_seconds = 0.0
+    span = _chunk_gap(
+        rec_at,
+        _parse(device.get("last_rec_end")),
+        _parse(device.get("last_chunk_at")),
+        now,
+    )
     if rec is None:
         new_session = True
+    elif span is None:
+        new_session = True
     else:
-        last = _parse(device.get("last_chunk_at"))
-        if last is not None:
-            gap_seconds = (now - last).total_seconds()
-            if gap_seconds > gap:
-                close_session(device, reason="gap")
-                new_session = True
-        else:
+        gap_seconds = max(0.0, span)
+        if gap_seconds > gap:
+            close_session(device, reason="gap")
             new_session = True
 
     if new_session:
@@ -482,12 +613,16 @@ def ingest(
 
     real_duration = int(duration_ms) or probe_duration_ms(full) or 0
     t = now_iso()
+    # 本片"录制结束时刻"：有录制时间就用它，否则退回服务器到达时间。
+    # 记录时间一律用录制时间，补传一整天的音频也能对上正确的日期。
+    chunk_end = rec_at + timedelta(milliseconds=real_duration) if rec_at else now
+    chunk_end_iso = chunk_end.isoformat()
     chunk_id = uid("chk_")
     execute(
         """INSERT INTO chunks
            (id, recording_id, seq, filename, path, mime, size, duration_ms,
-            start_offset_ms, status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)""",
+            start_offset_ms, status, created_at, updated_at, chunk_key)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)""",
         (
             chunk_id,
             rec["id"],
@@ -500,19 +635,20 @@ def ingest(
             offset,
             t,
             t,
+            chunk_key,
         ),
     )
 
     total_ms = offset + real_duration
     execute(
         """UPDATE recordings SET status = 'processing', duration_ms = ?,
-           ended_at = COALESCE(ended_at, ?) WHERE id = ?""",
-        (total_ms, t, rec["id"]),
+           ended_at = ? WHERE id = ?""",
+        (total_ms, chunk_end_iso, rec["id"]),
     )
     execute(
         """UPDATE devices SET open_recording_id = ?, last_chunk_at = ?, last_seen_at = ?,
-           session_chunks = COALESCE(session_chunks, 0) + 1 WHERE id = ?""",
-        (rec["id"], t, t, device["id"]),
+           last_rec_end = ?, session_chunks = COALESCE(session_chunks, 0) + 1 WHERE id = ?""",
+        (rec["id"], t, t, chunk_end_iso if rec_at else None, device["id"]),
     )
 
     enqueue("transcribe", {"chunkId": chunk_id}, max_attempts=3)

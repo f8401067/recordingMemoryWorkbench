@@ -7,6 +7,7 @@
 #include "driver/i2s_std.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "audio";
 
@@ -23,7 +24,7 @@ static const char *TAG = "audio";
 #define ES8311_I2C_ADDR ES8311_CODEC_DEFAULT_ADDR
 #define IN_GAIN_DB 30.0f /* 小智同款：远场拾音要开这么大 */
 
-static i2s_chan_handle_t s_rx, s_tx;
+static i2s_chan_handle_t s_rx;
 static const audio_codec_data_if_t *s_data_if;
 static const audio_codec_ctrl_if_t *s_ctrl_if;
 static const audio_codec_gpio_if_t *s_gpio_if;
@@ -41,8 +42,12 @@ esp_err_t audio_init(void)
         return ESP_ERR_INVALID_STATE;
     }
 
-    /* 双工通道：Philips 标准 I2S、16bit 立体声、不用 MCLK
-     * （ES8311 从 BCLK 自己生成时钟，板载 LED 占着 MCLK 那个脚） */
+    /* 只开 RX 通道：本固件没有播放路径（提示音走蜂鸣器，这块板还没接）。
+     * 以前建的是双工 TX+RX，esp_codec_dev 为了让 RX 时钟生效会把 TX 打开，
+     * 而且从不关；TX 的 APB PM 锁会一直持着，暂停时 light_sleep 永远进不去。
+     * RX 自己就是 master，MCLK 也由 RX 通道输出，够 ES8311 用。
+     * 要不要主控给 MCLK 看板子：BOX0 不用（LED 占着那个脚，ES8311 自己从 BCLK 生成），
+     * 微雪 ePaper 板必须给（官方 board_cfg.txt 里 use_mclk: 1）。 */
     i2s_chan_config_t chan_cfg = {
         .id = I2S_NUM_0,
         .role = I2S_ROLE_MASTER,
@@ -50,7 +55,7 @@ esp_err_t audio_init(void)
         .dma_frame_num = 240,
         .auto_clear_after_cb = true,
     };
-    esp_err_t err = i2s_new_channel(&chan_cfg, &s_tx, &s_rx);
+    esp_err_t err = i2s_new_channel(&chan_cfg, NULL, &s_rx);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "i2s_new_channel: %s", esp_err_to_name(err));
         return err;
@@ -60,7 +65,11 @@ esp_err_t audio_init(void)
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(APP_SAMPLE_RATE),
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
+#if BOARD_ES8311_USE_MCLK
+            .mclk = PIN_MIC_MCLK,
+#else
             .mclk = I2S_GPIO_UNUSED,
+#endif
             .bclk = PIN_MIC_BCLK,
             .ws = PIN_MIC_WS,
             .dout = PIN_MIC_DOUT,
@@ -68,10 +77,7 @@ esp_err_t audio_init(void)
             .invert_flags = {false, false, false},
         },
     };
-    err = i2s_channel_init_std_mode(s_tx, &std_cfg);
-    if (err == ESP_OK) {
-        err = i2s_channel_init_std_mode(s_rx, &std_cfg);
-    }
+    err = i2s_channel_init_std_mode(s_rx, &std_cfg);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "i2s init: %s", esp_err_to_name(err));
         return err;
@@ -80,7 +86,7 @@ esp_err_t audio_init(void)
     audio_codec_i2s_cfg_t i2s_cfg = {
         .port = I2S_NUM_0,
         .rx_handle = s_rx,
-        .tx_handle = s_tx,
+        .tx_handle = NULL, /* 没有播放路径：不给 TX，codec_dev 也就不会去使能它 */
     };
     s_data_if = audio_codec_new_i2s_data(&i2s_cfg);
 
@@ -95,9 +101,12 @@ esp_err_t audio_init(void)
     es8311_codec_cfg_t es_cfg = {
         .ctrl_if = s_ctrl_if,
         .gpio_if = s_gpio_if,
-        .codec_mode = ESP_CODEC_DEV_WORK_MODE_BOTH,
-        .pa_pin = -1, /* 功放自己管（board.c 已经拉低） */
-        .use_mclk = false,
+        /* 只有录音：不要 ESP_CODEC_DEV_WORK_MODE_BOTH，否则 DAC/输出级也一起上电 */
+        .codec_mode = ESP_CODEC_DEV_WORK_MODE_ADC,
+        /* 功放由 board.c 统一管着（默认是关的）。这版固件不放提示音，
+         * 交给 esp_codec_dev 反而可能在开录时被它拉起来，所以填 -1 */
+        .pa_pin = -1,
+        .use_mclk = (bool)BOARD_ES8311_USE_MCLK,
         .hw_gain.pa_voltage = 5.0,
         .hw_gain.codec_dac_voltage = 3.3,
     };
@@ -113,8 +122,9 @@ esp_err_t audio_init(void)
         ESP_LOGE(TAG, "esp_codec_dev 创建失败（检查 I2C 上有没有 0x18 的 ES8311）");
         return ESP_FAIL;
     }
-    ESP_LOGI(TAG, "ES8311 ready: I2S %d/%d/%d/%d, addr 0x%02X", PIN_MIC_BCLK, PIN_MIC_WS, PIN_MIC_DIN,
-             PIN_MIC_DOUT, ES8311_I2C_ADDR);
+    ESP_LOGI(TAG, "ES8311 ready: BCLK=%d WS=%d DIN=%d MCLK=%d addr 0x%02X", PIN_MIC_BCLK,
+             PIN_MIC_WS, PIN_MIC_DIN,
+             BOARD_ES8311_USE_MCLK ? PIN_MIC_MCLK : PIN_NC, ES8311_I2C_ADDR);
     return ESP_OK;
 }
 
@@ -123,6 +133,8 @@ esp_err_t audio_start(void)
     if (!s_dev || s_open) {
         return ESP_OK;
     }
+    /* 上次关麦时把 codec 供电也断了，这里先上电再配置 */
+    audio_mic_power(true);
     esp_codec_dev_sample_info_t fs = {
         .sample_rate = APP_SAMPLE_RATE,
         .channel = 1,
@@ -146,6 +158,9 @@ esp_err_t audio_stop(void)
     }
     esp_err_t err = (esp_err_t)esp_codec_dev_close(s_dev);
     s_open = false;
+    /* ES8311 被 close 后只是进了 standby， AUDIO_PWR 还连着，照样吃电；
+     * 暂停/不录音时直接把整颗 codec（和功放）断电 */
+    audio_mic_power(false);
     ESP_LOGI(TAG, "录音关");
     return err;
 }
@@ -165,7 +180,11 @@ int audio_read(int16_t *dst, int max_frames, uint32_t timeout_ms)
 
 void audio_mic_power(bool on)
 {
-    (void)on; /* ES8311 的供电由 board.c 的 CODEC_PWR 管 */
+    /* 板上 AUDIO_PWR 管 ES8311 + 功放，低电平使能；不录音时关掉能省几 mA */
+    board_audio_power(on);
+    if (on) {
+        vTaskDelay(pdMS_TO_TICKS(30)); /* 等 ES8311 上电稳定，再做 I2C 配置 */
+    }
 }
 
 #else /* BOARD_CODEC_ES8311 == 0：INMP441 数字麦直采 */

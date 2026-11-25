@@ -346,14 +346,16 @@ def create_asr_engine(provider: dict) -> AsrEngine:
         return DashscopeQwenAsr(provider)
     if kind == "openai-whisper":
         return OpenAiCompatibleAsr(provider)
-    if kind in ("local-sherpa-onnx", "local-faster-whisper", "local-whisper-cpp"):
+    if kind in ("local-sherpa-onnx", "local-faster-whisper", "local-whisper-cpp", "local-mlx-qwen3-asr"):
         # 延迟导入：没装本地依赖 / 没装 whisper.cpp 的用户不该在启动时被拖累
-        from .local_asr import FasterWhisperLocal, SherpaOnnxLocal, WhisperCppLocal
+        from .local_asr import FasterWhisperLocal, MlxQwen3AsrLocal, SherpaOnnxLocal, WhisperCppLocal
 
         if kind == "local-sherpa-onnx":
             return SherpaOnnxLocal(provider)
         if kind == "local-faster-whisper":
             return FasterWhisperLocal(provider)
+        if kind == "local-mlx-qwen3-asr":
+            return MlxQwen3AsrLocal(provider)
         return WhisperCppLocal(provider)
     if kind == "mock":
         return MockAsr()
@@ -368,6 +370,14 @@ ASR_KINDS = [
         "requiresKey": False,
         "requiresBaseUrl": False,
         "localBackend": "sherpa-onnx",
+    },
+    {
+        "kind": "local-mlx-qwen3-asr",
+        "label": "本地 · MLX Qwen3-ASR 1.7B（Apple Silicon）",
+        "hint": "Apple Silicon 专属：mlx-community 的 6bit 量化权重走 Metal，中文准确率比 0.6B 高一档。",
+        "requiresKey": False,
+        "requiresBaseUrl": False,
+        "localBackend": "mlx-qwen3-asr",
     },
     {
         "kind": "local-faster-whisper",

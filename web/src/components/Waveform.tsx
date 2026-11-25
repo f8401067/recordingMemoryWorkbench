@@ -29,7 +29,10 @@ export default function Waveform({
     if (!ctx2d) return;
     const paint = resolveColor(color);
 
-    let raf = 0;
+    // 波形只需要人眼可辨的刷新率，60fps 纯属浪费电量
+    const FRAME_MS = 125;
+    const size = { w: 0, h: 0 };
+    let timer = 0;
     let audioCtx: AudioContext | null = null;
     let analyser: AnalyserNode | null = null;
     let data: Uint8Array | null = null;
@@ -51,6 +54,8 @@ export default function Waveform({
     const resize = () => {
       const dpr = window.devicePixelRatio || 1;
       const rect = canvas.getBoundingClientRect();
+      size.w = rect.width;
+      size.h = rect.height;
       canvas.width = rect.width * dpr;
       canvas.height = rect.height * dpr;
       ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -61,9 +66,9 @@ export default function Waveform({
 
     const draw = () => {
       try {
-        const rect = canvas.getBoundingClientRect();
-        const w = rect.width;
-        const h = rect.height;
+        const w = size.w;
+        const h = size.h;
+        if (w <= 0 || h <= 0) return;
         ctx2d.clearRect(0, 0, w, h);
 
         const gap = Math.max(3, w / bars / 2.6);
@@ -85,7 +90,8 @@ export default function Waveform({
           } else if (!active) {
             target = 0.1 + Math.sin(i * 0.42) * 0.035 + Math.cos(i * 0.17) * 0.02;
           }
-          levels.current[i] += (target - levels.current[i]) * 0.3;
+          // 8fps 下用更大的插值系数，视觉响应接近原来的 60fps
+          levels.current[i] += (target - levels.current[i]) * 0.5;
           const bh = Math.max(bw, levels.current[i] * h * 0.94);
           const y = (h - bh) / 2;
           ctx2d.globalAlpha = active ? 0.85 : 0.35;
@@ -100,12 +106,18 @@ export default function Waveform({
       } catch {
         return;
       }
-      if (active) raf = requestAnimationFrame(draw);
     };
-    draw();
+
+    const loop = () => {
+      draw();
+      timer = window.setTimeout(loop, FRAME_MS);
+    };
+
+    if (active) loop();
+    else draw();
 
     return () => {
-      cancelAnimationFrame(raf);
+      window.clearTimeout(timer);
       ro.disconnect();
       if (audioCtx && audioCtx.state !== 'closed') void audioCtx.close();
     };

@@ -11,12 +11,17 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import json
 import os
+import queue
 import re
 import subprocess
+import sys
 import tempfile
 import threading
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -31,9 +36,202 @@ ZH_PROMPT = "以下是普通话的句子，请使用简体中文。"
 _LOCAL_SEM = threading.Semaphore(max(1, int(os.getenv("LOCAL_ASR_CONCURRENCY", "1"))))
 _CPP_SEM = threading.Semaphore(max(1, int(os.getenv("LOCAL_ASR_CONCURRENCY", "1"))))
 
+# 本地推理跑在 native 层，偶发死锁（ONNX Runtime 线程池 / sherpa-onnx 内部等待）。
+# 无限期等锁会把 8 个 worker 全挂住、整个转写队列停摆，所以统一改成带超时获取：
+# 超时就抛错，让任务走重试 / 失败，至少队列还能继续动。
+LOCAL_LOCK_TIMEOUT = float(os.getenv("LOCAL_ASR_LOCK_TIMEOUT", "300"))
+
+
+# ------------------------------------------------------------------ #
+# 进程隔离：把推理放进独立进程
+#
+# 本地引擎在 native 层会偶发死锁（ONNX Runtime 线程池挂起）。死锁时主进程里那几个
+# 线程永远卡住，而 Python 杀不掉一个卡在 C 扩展里的线程 —— 转写队列就整个停摆。
+# 放进独立进程后，主进程只发请求、等结果：超时就 kill 整个 worker，下次自动重新拉起
+# （代价是重新加载一次模型）。可用 LOCAL_ASR_ISOLATE=0 退回进程内推理。
+# ------------------------------------------------------------------ #
+ISOLATED = os.getenv("LOCAL_ASR_ISOLATE", "1").lower() not in ("0", "false", "no")
+SERVER_ROOT = str(Path(__file__).resolve().parents[2])  # server-py/
+WORKER_TIMEOUT = float(os.getenv("LOCAL_ASR_TIMEOUT", "180"))
+
+
+class _LocalWorker:
+    """一个常驻推理子进程，请求串行发、结果按序回。"""
+
+    def __init__(self, provider: dict) -> None:
+        self.provider = provider
+        self.proc: subprocess.Popen | None = None
+        self.q: queue.Queue | None = None
+        self.lock = threading.Lock()
+        # 子进程的 stderr 必须收着：它一崩（导入失败、缺库、native 段错误前的报错）
+        # 只在 stderr 里有线索，直接继承父进程的话会混进服务日志，用户看到的永远
+        # 只有一句「意外退出（code=1）」，根本没法排查。
+        self.err: deque[str] = deque(maxlen=60)
+
+    def _spawn(self) -> None:
+        # PYTHONPATH 一定要清掉：某些环境（AI 助手的 shell 注入、容器 entrypoint）
+        # 会把它指向带 sitecustomize.py 的目录，那玩意会挂 os.remove 之类的钩子。
+        # 推理进程每次都要清理临时 pcm，被钩子拦住就直接 exit(1)，
+        # 表现就是「子进程意外退出（code=1）」，而手工跑又完全正常，极难排查。
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        self.proc = subprocess.Popen(
+            [sys.executable, "-m", "app.providers.local_asr_worker"],
+            cwd=SERVER_ROOT,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            errors="replace",
+        )
+        q: queue.Queue = queue.Queue()
+        self.q = q
+        proc = self.proc
+        self.err.clear()
+
+        def _pump() -> None:
+            try:
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    q.put(line)
+            except Exception:  # noqa: BLE001
+                pass
+            q.put(None)  # EOF
+
+        def _pump_err() -> None:
+            try:
+                assert proc.stderr is not None
+                for line in proc.stderr:
+                    self.err.append(line.rstrip())
+            except Exception:  # noqa: BLE001
+                pass
+
+        threading.Thread(target=_pump, daemon=True, name="local-asr-stdout").start()
+        threading.Thread(target=_pump_err, daemon=True, name="local-asr-stderr").start()
+
+    def _tail(self, n: int = 8) -> str:
+        """取子进程 stderr 的最后几行，压成一行给用户看。"""
+        lines = [x for x in list(self.err) if x.strip()][-n:]
+        return " / ".join(lines)[-800:]
+
+    def _alive(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+
+    def kill(self) -> None:
+        if self.proc is not None:
+            if self.proc.poll() is None:
+                try:
+                    self.proc.kill()
+                    self.proc.wait(timeout=5)
+                except Exception:  # noqa: BLE001
+                    pass
+        self.proc = None
+        self.q = None
+
+    def call(self, req: dict, timeout: float) -> dict:
+        with self.lock:
+            if not self._alive():
+                self._spawn()
+            assert self.proc is not None and self.proc.stdin is not None and self.q is not None
+            try:
+                self.proc.stdin.write(json.dumps(req, ensure_ascii=False) + "\n")
+                self.proc.stdin.flush()
+            except (BrokenPipeError, OSError, ValueError) as e:
+                self.kill()
+                raise RuntimeError(f"本地 ASR 子进程通信失败：{e}") from e
+
+            try:
+                line = self.q.get(timeout=timeout)
+            except queue.Empty as e:
+                tail = self._tail()
+                self.kill()
+                raise RuntimeError(
+                    f"本地 ASR 推理超过 {int(timeout)}s 没返回，已杀掉引擎进程，下一次会自动重启"
+                    + (f"；崩溃输出：{tail}" if tail else "")
+                ) from e
+
+            if line is None:
+                code = self.proc.poll()
+                tail = self._tail()
+                self.kill()
+                raise RuntimeError(
+                    f"本地 ASR 子进程意外退出（code={code}）"
+                    + (f"：{tail}" if tail else "（子进程没有留下任何输出）")
+                )
+
+        data = json.loads(line)
+        if not data.get("ok"):
+            raise RuntimeError(str(data.get("error") or "本地转写失败"))
+        return dict(data.get("result") or {})
+
+
+_WORKERS: dict[str, _LocalWorker] = {}
+_WORKERS_LOCK = threading.Lock()
+
+
+def _worker_for(provider: dict) -> _LocalWorker:
+    key = "|".join(
+        str(provider.get(k) or "") for k in ("id", "kind", "model")
+    )
+    with _WORKERS_LOCK:
+        w = _WORKERS.get(key)
+        if w is None:
+            w = _LocalWorker(provider)
+            _WORKERS[key] = w
+        return w
+
+
+def remote_transcribe(provider: dict, file_path, mime=None, language=None, duration_ms=None) -> AsrResult:
+    dur_s = float(duration_ms or 0) / 1000
+    timeout = max(WORKER_TIMEOUT, dur_s * 10 + 60)
+    req = {
+        "provider": provider,
+        "file": str(file_path),
+        "mime": mime,
+        "language": language,
+        "durationMs": duration_ms,
+    }
+    return _worker_for(provider).call(req, timeout)  # type: ignore[return-value]
+
+
+def remote_diarize(
+    models: dict[str, str],
+    file_path: str,
+    duration_ms: int = 0,
+    num_threads: int = 2,
+    threshold: float = 0.7,
+    num_clusters: int = -1,
+) -> dict:
+    """在独立进程里跑说话人分离，返回 {numSpeakers, segments}。"""
+    timeout = max(300.0, float(duration_ms or 0) / 1000 * 0.5 + 120)
+    req = {
+        "task": "diarize",
+        "file": str(file_path),
+        "models": models,
+        "numThreads": num_threads,
+        "threshold": threshold,
+        "numClusters": num_clusters,
+    }
+    return _worker_for({"id": "diarize", "kind": "diarize"}).call(req, timeout)
+
+
+@contextmanager
+def _hold(lock, what: str):
+    if not lock.acquire(timeout=LOCAL_LOCK_TIMEOUT):
+        raise RuntimeError(
+            f"本地 ASR 引擎忙（等待「{what}」超过 {int(LOCAL_LOCK_TIMEOUT)}s），"
+            "疑似推理卡死，已放弃本次转写"
+        )
+    try:
+        yield
+    finally:
+        lock.release()
+
 _FW_CACHE: dict[str, Any] = {}
 _FW_LOCK = threading.Lock()
 _FW_MAX = 2  # 同时留两份权重（small + turbo 之类），再多会明显吃内存
+
 
 
 def _cfg(provider: dict) -> dict:
@@ -80,7 +278,7 @@ class FasterWhisperLocal(AsrEngine):
         threads = int(cfg.get("cpuThreads") or max(1, (os.cpu_count() or 4) // 2))
 
         key = f"{target}|{device}|{compute}|{threads}"
-        with _FW_LOCK:
+        with _hold(_FW_LOCK, "加载 faster-whisper 模型"):
             hit = _FW_CACHE.get(key)
             if hit is not None:
                 return hit
@@ -103,6 +301,8 @@ class FasterWhisperLocal(AsrEngine):
             return model
 
     def transcribe(self, file_path, mime=None, language=None, duration_ms=None) -> AsrResult:
+        if ISOLATED:
+            return remote_transcribe(self.p, file_path, mime, language, duration_ms)
         cfg = _cfg(self.p)
         model = self._model()
         lang = _lang(language)
@@ -116,7 +316,7 @@ class FasterWhisperLocal(AsrEngine):
 
         prompt = cfg.get("initialPrompt") or (ZH_PROMPT if lang == "zh" else None)
 
-        with _LOCAL_SEM:
+        with _hold(_LOCAL_SEM, "faster-whisper 推理"):
             segments_iter, info = model.transcribe(
                 audio,
                 language=lang,
@@ -213,7 +413,7 @@ class WhisperCppLocal(AsrEngine):
             if prompt:
                 cmd += ["--prompt", prompt]
 
-            with _CPP_SEM:
+            with _hold(_CPP_SEM, "whisper.cpp 推理"):
                 res = subprocess.run(cmd, capture_output=True, timeout=timeout, check=False)
             if res.returncode != 0:
                 tail = (res.stderr or res.stdout or b"").decode("utf-8", "ignore").strip()[-400:]
@@ -369,7 +569,7 @@ class SherpaOnnxLocal(AsrEngine):
         threads = int(cfg.get("cpuThreads") or max(1, (os.cpu_count() or 4) // 2))
         key = f"{d}|{family}|{threads}|{lang if family == 'sensevoice' else ''}"
 
-        with _SHERPA_LOCK:
+        with _hold(_SHERPA_LOCK, "加载 sherpa-onnx 模型"):
             hit = _SHERPA_CACHE.get(key)
             if hit is not None:
                 return hit, family
@@ -418,6 +618,8 @@ class SherpaOnnxLocal(AsrEngine):
             return model, family
 
     def transcribe(self, file_path, mime=None, language=None, duration_ms=None) -> AsrResult:
+        if ISOLATED:
+            return remote_transcribe(self.p, file_path, mime, language, duration_ms)
         cfg = _cfg(self.p)
         pcm, wav_ms = to_pcm16k(file_path)
         try:
@@ -437,7 +639,7 @@ class SherpaOnnxLocal(AsrEngine):
             chunk = audio[start:end]
             if chunk.size < sr * 0.2:  # 不足 0.2 秒的尾巴直接丢
                 continue
-            with _LOCAL_SEM:
+            with _hold(_LOCAL_SEM, "sherpa-onnx 推理"):
                 stream = recognizer.create_stream()
                 stream.accept_waveform(sr, chunk)
                 recognizer.decode_stream(stream)
@@ -462,6 +664,109 @@ class SherpaOnnxLocal(AsrEngine):
         }
 
 
+# ------------------------------------------------------------------ #
+# MLX Qwen3-ASR：Apple Silicon 专用，mlx-community 的 6bit 权重走 Metal
+# ------------------------------------------------------------------ #
+_MLX_CACHE: dict[str, Any] = {}
+_MLX_LOCK = threading.Lock()
+_MLX_MAX = 1  # 1.7B 6bit 常驻约 2GB，别多留
+
+# mlx-audio 认的是语种英文名，不是 zh / en
+_MLX_LANG = {
+    "zh": "Chinese",
+    "yue": "Cantonese",
+    "en": "English",
+    "ja": "Japanese",
+    "ko": "Korean",
+}
+
+
+class MlxQwen3AsrLocal(AsrEngine):
+    """MLX Qwen3-ASR：Apple Silicon 上用 Metal 跑 6bit 量化权重。"""
+
+    def __init__(self, provider: dict) -> None:
+        self.p = provider
+
+    def _model(self):
+        try:
+            from mlx_audio.stt import load  # type: ignore
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(
+                "未安装 mlx-audio，先执行：cd server-py && uv sync --extra local-asr"
+            ) from e
+
+        cfg = _cfg(self.p)
+        model_id = (self.p.get("model") or cfg.get("model") or "qwen3-asr-1.7b-6bit").strip()
+        local = store.mlx_path(model_id)
+        if not local:
+            raise RuntimeError(
+                f"本地 MLX 模型不存在：{model_id}。请先在「设置 → 语音识别」里下载，"
+                f"或把 MLX 目录放到 {store.MLX_DIR}/"
+            )
+
+        key = str(local)
+        with _hold(_MLX_LOCK, "加载 MLX 模型"):
+            hit = _MLX_CACHE.get(key)
+            if hit is not None:
+                return hit
+            try:
+                model = load(key)
+            except Exception as e:  # noqa: BLE001
+                raise RuntimeError(f"加载本地 MLX 模型失败（{local.name}）：{e}") from e
+            while len(_MLX_CACHE) >= _MLX_MAX:
+                _MLX_CACHE.pop(next(iter(_MLX_CACHE)))
+            _MLX_CACHE[key] = model
+            return model
+
+    def transcribe(self, file_path, mime=None, language=None, duration_ms=None) -> AsrResult:
+        if ISOLATED:
+            return remote_transcribe(self.p, file_path, mime, language, duration_ms)
+        model = self._model()
+        wav, wav_ms = to_wav16k(file_path)
+        lang = _MLX_LANG.get((language or "").strip().lower())
+
+        # mlx-audio 的 generate 直接吃文件路径；WAV 有原生快速路径，不用过 ffmpeg
+        with tempfile.TemporaryDirectory() as td:
+            wav_path = Path(td) / "in.wav"
+            wav_path.write_bytes(wav)
+            with _hold(_LOCAL_SEM, "MLX Qwen3-ASR 推理"):
+                out = model.generate(str(wav_path), language=lang, verbose=False)
+
+        segments: list[Segment] = []
+        for item in getattr(out, "segments", None) or []:
+            text = _clean(str(item.get("text") or ""))
+            if not text:
+                continue
+            segments.append(
+                {
+                    "startMs": int(round(float(item.get("start") or 0) * 1000)),
+                    "endMs": int(round(float(item.get("end") or 0) * 1000)),
+                    "text": text,
+                }
+            )
+
+        text = _clean(str(getattr(out, "text", "") or ""))
+        if not segments and text:
+            segments = [{"startMs": 0, "endMs": wav_ms, "text": text}]
+        if not text:
+            text = "".join(s["text"] for s in segments)
+
+        path = store.mlx_path(self.p.get("model"))
+        detected = getattr(out, "language", None)
+        if isinstance(detected, list):
+            detected = detected[0] if detected else None
+        return {
+            "text": text,
+            "segments": segments,
+            "meta": {
+                "engine": "mlx-qwen3-asr",
+                "model": path.name if path else self.p.get("model"),
+                "language": detected,
+                "audioMs": wav_ms,
+            },
+        }
+
+
 def local_engine_ready(provider: dict) -> tuple[bool, str]:
     """给「测试」按钮用的轻量体检：不乱加载模型，也不跑推理。"""
     kind = provider.get("kind")
@@ -473,6 +778,8 @@ def local_engine_ready(provider: dict) -> tuple[bool, str]:
         model = provider.get("model")
         path = store.sherpa_path(model)
         if not path:
+            if store.mlx_repo(model):
+                return False, f"模型 {model} 是 MLX 专用权重，请把类型改成「本地 · MLX Qwen3-ASR」"
             return False, f"模型 {model or '未填写'} 还没下载，点「下载」或换一个已下载的模型"
         return True, f"sherpa-onnx {version} · {path.name} 已就位（CPU 本地推理，音频不出本机）"
 
@@ -485,6 +792,18 @@ def local_engine_ready(provider: dict) -> tuple[bool, str]:
             return False, f"模型 {model} 还没下载，点「下载」或更换已下载的模型"
         return True, f"faster-whisper {version} · 模型 {model} 已就位（推理在 CPU/GPU 本地完成）"
 
+    if kind == "local-mlx-qwen3-asr":
+        if not store.apple_silicon():
+            return False, "MLX 只支持 Apple Silicon Mac（M 系列芯片），Intel Mac / Linux 用不了"
+        version = store.mlx_audio_version()
+        if not version:
+            return False, "未安装 mlx-audio，执行：cd server-py && uv sync --extra local-asr"
+        model = provider.get("model") or "qwen3-asr-1.7b-6bit"
+        path = store.mlx_path(model)
+        if not path:
+            return False, f"模型 {model} 还没下载，点「下载」或换一个已下载的模型"
+        return True, f"mlx-audio {version} · {path.name} 已就位（Metal 本地推理，音频不出本机）"
+
     binary = store.whisper_cpp_binary(cfg.get("binaryPath"))
     if not binary:
         return False, "未找到 whisper-cli，macOS 执行 brew install whisper-cpp"
@@ -494,4 +813,10 @@ def local_engine_ready(provider: dict) -> tuple[bool, str]:
     return True, f"whisper.cpp 就绪 · {binary} · {model_path.name}"
 
 
-__all__ = ["FasterWhisperLocal", "SherpaOnnxLocal", "WhisperCppLocal", "local_engine_ready"]
+__all__ = [
+    "FasterWhisperLocal",
+    "MlxQwen3AsrLocal",
+    "SherpaOnnxLocal",
+    "WhisperCppLocal",
+    "local_engine_ready",
+]

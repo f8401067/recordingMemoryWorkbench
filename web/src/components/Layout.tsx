@@ -1,7 +1,7 @@
 import React from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
-  AudioLines, History, Home, Settings, Mic, LogOut, Moon, Sun, Monitor,
+  AudioLines, Compass, History, Home, ListChecks, Settings, Mic, LogOut, Moon, Sun, Monitor,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useAuth } from '../lib/auth';
@@ -9,7 +9,9 @@ import ErrorBoundary from './ErrorBoundary';
 
 const navItems = [
   { to: '/', label: '首页', icon: Home, exact: true },
+  { to: '/actions', label: '行动', icon: ListChecks },
   { to: '/calendar', label: '回忆', icon: History },
+  { to: '/find', label: '找寻', icon: Compass },
   { to: '/settings', label: '设置', icon: Settings },
 ];
 
@@ -138,7 +140,7 @@ export default function Layout() {
       {/* 移动端底部导航 */}
       {!onRecordPage && (
         <nav className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-panel/92 backdrop-blur-xl border-t border-line pb-safe">
-          <div className="grid grid-cols-3 h-[58px]">
+          <div className="grid grid-cols-5 h-[58px]">
             {navItems.map((item) => (
               <NavLink
                 key={item.to}

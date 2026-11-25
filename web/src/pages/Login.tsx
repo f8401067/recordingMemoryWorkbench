@@ -19,10 +19,13 @@ export default function Login() {
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPwd, setConfirmPwd] = useState('');
   const [loading, setLoading] = useState(false);
   const [dbError, setDbError] = useState<string | null>(null);
+  const isRegister = mode === 'register';
+  const mismatch = isRegister && !!confirmPwd && password !== confirmPwd;
 
-  // 数据库里一个账号都没有（刚切到外部 PostgreSQL）→ 直接进初始化向导
+  // 数据库里一个账号都没有（新库刚建好）→ 直接进初始化向导；连不上就提示去改配置文件
   useEffect(() => {
     void (async () => {
       try {
@@ -37,7 +40,14 @@ export default function Login() {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username || !password) return;
+    if (!username) return;
+    if (mode === 'register') {
+      if (password.length < 6) return toast.push('密码至少 6 位', 'error');
+      if (!confirmPwd) return toast.push('请再输入一遍密码', 'error');
+      if (password !== confirmPwd) return toast.push('两次输入的密码不一致', 'error');
+    } else if (!password) {
+      return;
+    }
     setLoading(true);
     try {
       if (mode === 'login') await login(username, password);
@@ -131,7 +141,7 @@ export default function Login() {
                   onClick={() => navigate('/setup')}
                   className="block mt-1 font-medium underline underline-offset-2"
                 >
-                  去修正数据库配置
+                  查看排查方法
                 </button>
               </div>
             </div>
@@ -161,9 +171,28 @@ export default function Login() {
               />
             </div>
 
+            {isRegister && (
+              <div>
+                <label className="label">确认密码</label>
+                <input
+                  className="field h-11"
+                  type="password"
+                  value={confirmPwd}
+                  onChange={(e) => setConfirmPwd(e.target.value)}
+                  placeholder="再输入一遍密码"
+                  autoComplete="new-password"
+                />
+                {mismatch && (
+                  <div className="mt-1.5 flex items-center gap-1 text-[11px] text-red-500">
+                    <AlertCircle size={11} className="shrink-0" /> 两次输入的密码不一致
+                  </div>
+                )}
+              </div>
+            )}
+
             <button
               type="submit"
-              disabled={loading || !username || !password}
+              disabled={loading || !username || !password || (isRegister && (!confirmPwd || mismatch))}
               className="btn-primary w-full h-11 mt-2"
             >
               {loading ? (
@@ -180,7 +209,10 @@ export default function Login() {
           <div className="mt-5 text-center text-sm text-muted">
             {mode === 'login' ? '还没有账号？' : '已有账号？'}
             <button
-              onClick={() => setMode(mode === 'login' ? 'register' : 'login')}
+              onClick={() => {
+                setMode(mode === 'login' ? 'register' : 'login');
+                setConfirmPwd('');
+              }}
               className="ml-1 text-brand font-medium hover:underline"
             >
               {mode === 'login' ? '注册一个' : '去登录'}

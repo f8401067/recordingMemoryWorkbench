@@ -1,9 +1,6 @@
-"""首次初始化向导（无需登录）。
+"""首次初始化：数据库连不上时告诉你怎么改配置，没有账号时创建第一个管理员。
 
-只有两种情况下允许匿名调用：
-1. 数据库连不上（配置写错了，得留一条自救通道）；
-2. 数据库里一个账号都没有（刚建好库，还没有管理员）。
-创建管理员之后，这个接口就永久 409 了。
+数据库连接信息只来自配置文件（server-py/.env 或容器环境变量），页面上不再提供修改入口。
 """
 
 from __future__ import annotations
@@ -12,8 +9,8 @@ from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException
 
+from ..config import ENV_FILE
 from ..db import init_db, probe_status
-from ..db_config import public_config
 from ..security import create_token
 from ..services.settings import read_settings
 from ..services.users import create_user, public_user
@@ -24,7 +21,12 @@ router = APIRouter(prefix="/api/setup", tags=["setup"])
 @router.get("/status")
 def status() -> dict:
     st = probe_status()
-    return {**st, "config": public_config()}
+    return {
+        **st,
+        # 配置写错时前端直接把这两个字段显示出来，省得用户到处找
+        "configFile": str(ENV_FILE),
+        "configKey": "DATABASE_URL",
+    }
 
 
 @router.post("/admin")

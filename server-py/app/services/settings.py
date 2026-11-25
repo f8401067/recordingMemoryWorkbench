@@ -6,11 +6,23 @@ from typing import Any
 from ..db import all_, execute
 
 DEFAULTS: dict[str, Any] = {
-    "chunkSeconds": 30,
+    "chunkSeconds": 120,
     "autoSummarize": True,
+    # 本地说话人分离：转写完成后自动标注「说话人 1/2/…」
+    "speakerDiarization": False,
+    "diarizationThreshold": 0.7,
+    # 声纹角色匹配阈值：余弦相似度低于它就只显示「说话人 N」，不硬套名字
+    "voiceprintThreshold": 0.6,
     "summaryProviderId": None,
     "summaryTemplate": "meeting",
+    # 单条录音的自定义要求（沿用老字段名，老数据不用迁移）
     "summaryPrompt": "",
+    # 日报 / 周报 / 月报 / 年报 / 任意时段各自的自定义要求
+    "promptDay": "",
+    "promptWeek": "",
+    "promptMonth": "",
+    "promptYear": "",
+    "promptRange": "",
     "language": "zh",
     "theme": "system",
 }

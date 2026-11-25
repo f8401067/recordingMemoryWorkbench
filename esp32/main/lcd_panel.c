@@ -16,6 +16,10 @@
 #include "esp_log.h"
 #include "ui_font.h"
 
+/* 墨水屏板子（BOARD_DISPLAY_EPAPER=1）用的是 epd_panel.c，
+ * 这个文件整段跳过：那类板子根本没接 TFT 引脚。 */
+#if !BOARD_DISPLAY_EPAPER
+
 static const char *TAG = "lcd";
 
 #define LCD_HOST SPI2_HOST
@@ -247,3 +251,5 @@ esp_err_t lcd_init(void)
     ESP_LOGI(TAG, "ST7789V2 %dx%d 就绪，pclk %dMHz，背光已开", LCD_W, LCD_H, CONFIG_RECALL_LCD_PCLK_MHZ);
     return ESP_OK;
 }
+
+#endif /* !BOARD_DISPLAY_EPAPER */

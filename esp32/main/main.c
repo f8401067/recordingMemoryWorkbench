@@ -9,10 +9,14 @@
 #include "app.h"
 #include "app_config.h"
 #include "audio.h"
+#include "battery.h"
 #include "board.h"
+#include "clock.h"
 #include "display.h"
 #include "esp_log.h"
 #include "esp_pm.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "netcfg.h"
 #include "nvs_flash.h"
 #include "ogg_opus.h"
@@ -35,10 +39,21 @@ void app_main(void)
     /* 先配置板级：I2C 总线、IO 扩展（背光/状态灯），屏和音频都靠它 */
     board_init();
 
+    /* 电池检测：ADC1_CH3（GPIO4），屏上一直显示电量 */
+    if (battery_init() == ESP_OK) {
+        ESP_LOGI(TAG, "电池电压 %.2fV（%d%%）", battery_voltage(), battery_percent());
+    } else {
+        ESP_LOGW(TAG, "电池检测不可用，屏上不显示电量");
+    }
+
     /* 先亮屏、先能响，后面哪一步挂了用户也知道 */
     display_init();
     ui_init();
     uploader_init();
+
+    /* 墙上时钟：有 RTC 用 RTC，没有就用 NVS 里的上次值；录音分片靠它盖时间戳。
+     * 必须在 spool 之前——开机恢复 .part 文件时要按时间命名 */
+    clock_init();
 
     if (spool_init() != ESP_OK) {
         ESP_LOGE(TAG, "本地存储挂载失败，功能不可用");
@@ -50,10 +65,10 @@ void app_main(void)
         ESP_LOGE(TAG, "I2S 初始化失败，检查麦克风接线");
     }
 
-    /* 动态调频：空闲 80MHz，编码时自动上到 160MHz */
+    /* 动态调频：空闲 40MHz，编码/上传时自动上到 160MHz */
     esp_pm_config_t pm = {
         .max_freq_mhz = 160,
-        .min_freq_mhz = 80,
+        .min_freq_mhz = 40,
         .light_sleep_enable = false, /* 麦克风要持续采样，不进 light sleep */
     };
     esp_err_t pm_err = esp_pm_configure(&pm);

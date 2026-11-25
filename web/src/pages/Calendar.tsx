@@ -1,20 +1,22 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import {
-  AlertCircle, ArrowUpRight, BookOpen, ChevronLeft, ChevronRight, Clock, Loader2,
-  Plus, RefreshCw, Sparkles,
+  AlertCircle, ArrowUpRight, BookOpen, CalendarDays, ChevronDown, ChevronLeft, ChevronRight,
+  Clock, Loader2, Plus, RefreshCw, Sparkles,
 } from 'lucide-react';
-import { api, type CalendarDay, type Recording, type Summary } from '../lib/api';
+import { api, deleteRecording, type CalendarDay, type Recording, type Summary } from '../lib/api';
 import { useToast } from '../lib/toast';
-import RecordingCard from '../components/RecordingCard';
+import RecordingList from '../components/RecordingList';
 import MarkdownView from '../components/MarkdownView';
+import SummaryMcpActions from '../components/SummaryMcpActions';
 import { cn, fmtDurationCn, fmtTime, todayStr, weekdayCn } from '../lib/utils';
 
-type ViewMode = 'day' | 'week' | 'year';
+type ViewMode = 'day' | 'week' | 'month' | 'year';
 
 const VIEWS: { key: ViewMode; label: string }[] = [
   { key: 'day', label: '日' },
   { key: 'week', label: '周' },
+  { key: 'month', label: '月' },
   { key: 'year', label: '年' },
 ];
 
@@ -57,6 +59,9 @@ function periodOf(view: ViewMode, anchor: string) {
     const monday = mondayOf(anchor);
     return { from: monday, to: shiftDate(monday, 6) };
   }
+  if (view === 'month') {
+    return { from: `${anchor.slice(0, 7)}-01`, to: monthEndOf(anchor) };
+  }
   const y = anchor.slice(0, 4);
   return { from: `${y}-01-01`, to: `${y}-12-31` };
 }
@@ -64,6 +69,7 @@ function periodOf(view: ViewMode, anchor: string) {
 function labelOf(view: ViewMode, from: string, to: string) {
   const a = parseDate(from);
   if (view === 'year') return `${a.getFullYear()} 年`;
+  if (view === 'month') return `${a.getFullYear()} 年 ${a.getMonth() + 1} 月`;
   if (view === 'day') {
     return `${a.getFullYear()} 年 ${a.getMonth() + 1} 月 ${a.getDate()} 日 ${weekdayCn(from)}`;
   }
@@ -77,15 +83,22 @@ type MemState = 'loading' | 'ready' | 'waiting' | 'failed' | 'none';
 export default function CalendarPage() {
   const toast = useToast();
   const [params, setParams] = useSearchParams();
+  const location = useLocation();
+  // 当前页的完整地址（带 view/date），详情页返回时用它回到同一屏
+  const here = `${location.pathname}${location.search}`;
 
   const [view, setView] = useState<ViewMode>(() => {
     const v = params.get('view');
-    return v === 'day' || v === 'week' || v === 'year' ? v : 'day';
+    return v === 'day' || v === 'week' || v === 'month' || v === 'year' ? v : 'day';
   });
   const [anchor, setAnchor] = useState(() => {
     const d = params.get('date');
     return d && /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : todayStr();
   });
+  // 日历默认收起，点击标题栏展开
+  const [calOpen, setCalOpen] = useState(false);
+  // 切换时用左右滑入动画，key 用于每次切换重新触发动画
+  const [slide, setSlide] = useState<{ dir: 1 | -1; key: number } | null>(null);
 
   const period = useMemo(() => periodOf(view, anchor), [view, anchor]);
   const periodKey = `${view}:${period.from}:${period.to}`;
@@ -122,6 +135,21 @@ export default function CalendarPage() {
   }, [calRange.from, calRange.to, toast]);
 
   useEffect(() => { void loadCalendar(); }, [loadCalendar]);
+
+  const removeRecording = useCallback(
+    async (r: Recording) => {
+      if (!confirm(`删除「${r.title}」？\n删除后无法恢复，音频与转写文字都会被清除。`)) return;
+      try {
+        await deleteRecording(r.id);
+        setRecords((cur) => cur.filter((x) => x.id !== r.id));
+        void loadCalendar();
+        toast.push('已删除', 'success');
+      } catch (e: any) {
+        toast.push(e?.message ?? '删除失败', 'error');
+      }
+    },
+    [loadCalendar, toast],
+  );
 
   const dayMap = useMemo(() => {
     const m = new Map<string, CalendarDay>();
@@ -293,7 +321,9 @@ export default function CalendarPage() {
   const shift = (dir: number) => {
     if (view === 'day') setAnchor(shiftDate(anchor, dir));
     else if (view === 'week') setAnchor(shiftDate(anchor, dir * 7));
+    else if (view === 'month') shiftMonth(dir);
     else setAnchor(`${Number(anchor.slice(0, 4)) + dir}-01-01`);
+    setSlide((s) => ({ dir: dir > 0 ? 1 : -1, key: (s?.key ?? 0) + 1 }));
   };
 
   const shiftMonth = (delta: number) => {
@@ -306,6 +336,26 @@ export default function CalendarPage() {
   const openDay = (date: string) => {
     setAnchor(date);
     setView('day');
+  };
+
+  /* ---------------- 移动端左右滑动切换 ---------------- */
+  const touchStart = useRef<{ x: number; y: number } | null>(null);
+
+  const onTouchStart = (e: React.TouchEvent) => {
+    const t = e.touches[0];
+    touchStart.current = t ? { x: t.clientX, y: t.clientY } : null;
+  };
+
+  const onTouchEnd = (e: React.TouchEvent) => {
+    const start = touchStart.current;
+    touchStart.current = null;
+    const t = e.changedTouches[0];
+    if (!start || !t) return;
+    const dx = t.clientX - start.x;
+    const dy = t.clientY - start.y;
+    // 只在明显的横向滑动时翻页，避免和纵向滚动、点按冲突
+    if (Math.abs(dx) < 50 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    shift(dx < 0 ? 1 : -1);
   };
 
   useEffect(() => {
@@ -493,6 +543,77 @@ export default function CalendarPage() {
       );
     }
 
+    if (view === 'month') {
+      return (
+        <div className="card p-3 md:p-4">
+          <div className="flex items-center justify-between px-1 pb-2">
+            <div className="text-[12.5px] font-medium tabular-nums">
+              {anchorDate.getFullYear()} 年 {anchorDate.getMonth() + 1} 月
+            </div>
+            <div className="flex items-center gap-0.5">
+              <button
+                onClick={() => shiftMonth(-1)}
+                className="h-7 w-7 grid place-items-center rounded-lg hover:bg-panel2 text-muted transition-colors"
+              >
+                <ChevronLeft size={15} />
+              </button>
+              <button
+                onClick={() => shiftMonth(1)}
+                className="h-7 w-7 grid place-items-center rounded-lg hover:bg-panel2 text-muted transition-colors"
+              >
+                <ChevronRight size={15} />
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-7 mb-1">
+            {WEEK_LABELS.map((w) => (
+              <div key={w} className="text-center text-[10.5px] text-muted/70 py-1.5 font-medium">
+                {w}
+              </div>
+            ))}
+          </div>
+          <div className="grid grid-cols-7 gap-1">
+            {monthCells.map((date, i) => {
+              if (!date) return <div key={`e${i}`} className="aspect-square" />;
+              const info = dayMap.get(date);
+              const isToday = date === todayStr();
+              const hasRec = (info?.recordings ?? 0) > 0;
+              const hasSum = info?.summaryStatus === 'ready';
+              return (
+                <button
+                  key={date}
+                  onClick={() => openDay(date)}
+                  title={info?.titles?.join(' · ') || '这天还没有录音'}
+                  className={cn(
+                    'relative aspect-square rounded-xl flex flex-col items-center justify-center transition-all',
+                    isToday
+                      ? 'bg-soft text-brand font-semibold'
+                      : hasRec
+                        ? 'hover:bg-panel2 text-ink'
+                        : 'text-muted/60 hover:bg-panel2',
+                  )}
+                >
+                  <span className="text-[13px] tabular-nums">{Number(date.slice(-2))}</span>
+                  {hasRec && (
+                    <span className="absolute bottom-1.5 flex items-center gap-0.5">
+                      {hasSum ? (
+                        <Sparkles size={8} className="text-brand" />
+                      ) : (
+                        <span className="h-1 w-1 rounded-full bg-brand/60" />
+                      )}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          {legend}
+          <div className="mt-1 text-[10.5px] text-muted px-1">点某一天可以跳到那天的回忆</div>
+        </div>
+      );
+    }
+
     // 年视图
     const year = Number(anchor.slice(0, 4));
     const perMonth = Array.from({ length: 12 }, (_, i) => {
@@ -560,7 +681,7 @@ export default function CalendarPage() {
 
   /* ---------------- 回忆正文 ---------------- */
   const scopeLabel =
-    view === 'year' ? '年度回忆' : view === 'week' ? '这一周的回忆' : '这一天的回忆';
+    view === 'year' ? '年度回忆' : view === 'month' ? '这个月的回忆' : view === 'week' ? '这一周的回忆' : '这一天的回忆';
 
   const renderMemory = () => {
     if (memState === 'loading') {
@@ -579,7 +700,7 @@ export default function CalendarPage() {
         <div className="card p-5">
           <div className="flex items-center gap-2 text-[12px] font-medium text-brand">
             <Loader2 size={13} className="animate-spin" />
-            正在整理这段回忆
+            {view === 'day' ? '正在整理这段回忆' : '正在准备下级回忆'}
           </div>
           <div className="mt-3.5 space-y-2 animate-pulse">
             <div className="h-2.5 rounded-full bg-panel2 w-[82%]" />
@@ -588,9 +709,11 @@ export default function CalendarPage() {
             <div className="h-2.5 rounded-full bg-panel2 w-[46%]" />
           </div>
           <p className="text-[11.5px] text-muted mt-4 leading-relaxed">
-            {stats.count > 0
-              ? `这段时间有 ${stats.count} 段录音，AI 正在读完转写并归纳要点。`
-              : 'AI 正在归纳要点。'}
+            {view === 'day'
+              ? stats.count > 0
+                ? `这段时间有 ${stats.count} 段录音，AI 正在读完转写并归纳要点。`
+                : 'AI 正在归纳要点。'
+              : '周/月/年回忆由下级回忆逐层汇总：先把缺的日报、月报补齐，再用它们归纳。第一次需要等一会儿，之后重新整理会快很多。'}
             生成完成后会自动出现在这里，你可以先去别处，稍后回来查看。
           </p>
         </div>
@@ -640,6 +763,7 @@ export default function CalendarPage() {
                 </button>
                 <Link
                   to={`/summaries/${summary.id}`}
+                  state={{ from: here }}
                   title="全文"
                   className="h-7 w-7 grid place-items-center rounded-lg text-muted hover:bg-panel2 hover:text-ink"
                 >
@@ -678,6 +802,7 @@ export default function CalendarPage() {
               <div className="pointer-events-none absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-panel via-panel/80 to-transparent" />
               <Link
                 to={`/summaries/${summary.id}`}
+                state={{ from: here }}
                 className="absolute inset-x-0 bottom-1 flex justify-center"
               >
                 <span className="inline-flex items-center gap-1.5 h-8 px-3.5 rounded-full bg-panel/95 border border-line text-[12px] text-ink shadow-soft backdrop-blur">
@@ -685,18 +810,22 @@ export default function CalendarPage() {
                 </span>
               </Link>
             </div>
+
+            <SummaryMcpActions summaryId={summary.id} compact className="mt-4" />
           </div>
         </div>
       );
     }
 
-    // 还没有记录
-    if (stats.count === 0) {
+    // 还没有记录（日视图以实际明细兜底，避免日历聚合与明细不一致时出现
+    // 「这一天没有录音」却下面列着录音的自相矛盾）
+    const empty = view === 'day' ? stats.count === 0 && records.length === 0 : stats.count === 0;
+    if (empty) {
       return (
         <div className="card p-8 text-center">
           <BookOpen size={20} className="text-muted mx-auto mb-2" />
           <div className="text-[13px] text-muted">
-            {view === 'day' ? '这一天没有录音' : view === 'week' ? '这一周没有录音' : '这一年还没有录音'}
+            {view === 'day' ? '这一天没有录音' : view === 'week' ? '这一周没有录音' : view === 'month' ? '这个月没有录音' : '这一年还没有录音'}
           </div>
           <Link
             to="/record"
@@ -719,7 +848,7 @@ export default function CalendarPage() {
         </div>
         <p className="text-[12px] text-muted mt-1.5 leading-relaxed">
           {view === 'year'
-            ? `${anchor.slice(0, 4)} 年共有 ${stats.count} 段录音。年度回忆会把全年的转写一起读一遍，耗时会比日报长，需要你手动触发。`
+            ? `${anchor.slice(0, 4)} 年共有 ${stats.count} 段录音。年度回忆基于 12 份月报汇总，缺的月报和日报会先自动补齐；首次需要等一会儿，之后重新整理很快。需要手动触发。`
             : '点击下面的按钮开始整理。'}
         </p>
         <button
@@ -737,7 +866,11 @@ export default function CalendarPage() {
   const relatedVisible = related.filter((s) => s.status !== 'generating');
 
   return (
-    <div className="max-w-5xl mx-auto px-4 md:px-8 py-6 md:py-10">
+    <div
+      className="max-w-5xl mx-auto px-4 md:px-8 py-6 md:py-10"
+      onTouchStart={onTouchStart}
+      onTouchEnd={onTouchEnd}
+    >
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <h1 className="text-[24px] md:text-[28px] font-semibold tracking-tight">回忆</h1>
@@ -781,11 +914,36 @@ export default function CalendarPage() {
         >
           今天
         </button>
+        <button
+          onClick={() => setCalOpen((v) => !v)}
+          title={calOpen ? '收起日历' : '展开日历'}
+          className={cn(
+            'ml-auto h-7 px-2.5 rounded-lg text-[12px] inline-flex items-center gap-1.5 transition-colors',
+            calOpen ? 'text-ink bg-panel2' : 'text-muted hover:text-ink hover:bg-panel2',
+          )}
+        >
+          <CalendarDays size={13} />
+          日历
+          <ChevronDown size={13} className={cn('transition-transform', calOpen && 'rotate-180')} />
+        </button>
       </div>
 
-      <div className="mt-4 grid lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)] gap-5 items-start">
+      <div
+        key={`page-${slide?.key ?? 0}`}
+        className={cn(
+          'mt-4 grid gap-5 items-start',
+          calOpen && 'lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]',
+          slide && (slide.dir > 0 ? 'animate-slide-in-right' : 'animate-slide-in-left'),
+        )}
+      >
+        {calOpen && <div>{renderCalendar()}</div>}
+
         <div className="space-y-3">
-          {renderCalendar()}
+          {renderMemory()}
+
+          {view === 'day' && records.length > 0 && (
+            <RecordingList items={records} onDelete={removeRecording} />
+          )}
 
           {view === 'day' && records.length > 0 && (
             <div className="text-[11px] text-muted text-center pt-0.5 flex items-center justify-center gap-1">
@@ -793,22 +951,12 @@ export default function CalendarPage() {
               共 {fmtDurationCn(records.reduce((a, r) => a + r.durationMs, 0))}
             </div>
           )}
-        </div>
-
-        <div className="space-y-3">
-          {renderMemory()}
-
-          {view === 'day' && records.length > 0 && (
-            <div className="space-y-2">
-              {records.map((r) => <RecordingCard key={r.id} r={r} />)}
-            </div>
-          )}
 
           {view !== 'day' && relatedVisible.length > 0 && (
             <div className="space-y-2">
               <div className="flex items-center gap-2 px-1">
                 <span className="text-[11.5px] text-muted">
-                  {view === 'year' ? '这一年已经整理过的回忆' : '这一周已经整理过的回忆'}
+                  {view === 'year' ? '这一年已经整理过的回忆' : view === 'month' ? '这个月已经整理过的回忆' : '这一周已经整理过的回忆'}
                 </span>
                 <div className="flex-1 h-px bg-line" />
               </div>
@@ -816,6 +964,7 @@ export default function CalendarPage() {
                 <Link
                   key={s.id}
                   to={`/summaries/${s.id}`}
+                  state={{ from: here }}
                   className="card p-3 flex items-center gap-2.5 hover:border-brand/30 hover:shadow-soft transition-all"
                 >
                   <Sparkles size={12} className="text-brand shrink-0" />

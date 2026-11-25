@@ -177,8 +177,9 @@ def render(m):
     elif m["kind"] == "ready":
         top_bar(cv, m, C_ACC)
         y = TOP_H + 18
-        cv.ctext(y, T_BIG, C_FG, "HOLD 0.7S")
-        y += 7 * T_BIG + 12
+        big = cv.fit_scale("HOLD 0.7S", W - 16, T_BIG)
+        cv.ctext(y, big, C_FG, "HOLD 0.7S")
+        y += 7 * big + 12
         cv.ctext(y, T_MID, C_ACC, "TO RECORD")
         y += 7 * T_MID + 14
         cv.ctext(y, T_SMALL, C_DIM, m["line"])

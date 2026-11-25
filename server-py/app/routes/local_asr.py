@@ -51,3 +51,21 @@ def delete_model(backend: str, model: str, _: dict = Depends(current_user)) -> d
     if not removed:
         raise HTTPException(404, "模型不存在或已删除")
     return {"ok": True}
+
+
+@router.get("/diarization")
+def diarization_status(_: dict = Depends(current_user)) -> dict:
+    """说话人分离模型（pyannote 分割 + 3D-Speaker 声纹嵌入）。"""
+    return store.diarization_status()
+
+
+@router.post("/diarization/download")
+def download_diarization(_: dict = Depends(current_user)) -> dict:
+    return store.start_diarization_download()
+
+
+@router.delete("/diarization/model")
+def delete_diarization(_: dict = Depends(current_user)) -> dict:
+    if not store.remove_diarization_models():
+        raise HTTPException(404, "模型不存在或已删除")
+    return {"ok": True}

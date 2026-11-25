@@ -19,6 +19,12 @@ i2c_master_bus_handle_t board_i2c_bus(void);
 /* 屏幕背光。没有 IO 扩展的板子上是空操作 */
 void board_backlight(bool on);
 
+/* 音频编解码器供电（微雪 ePaper 板：GPIO42，低电平开） */
+void board_audio_power(bool on);
+
+/* 墨水屏供电（微雪 ePaper 板：GPIO6，低电平开）。关掉后画面仍然保留 */
+void board_epd_power(bool on);
+
 /* 板载状态灯。BOX3 上是 AW9523B 的 P1_2（蓝色），普通板子是 PIN_LED */
 void board_led(bool on);
 

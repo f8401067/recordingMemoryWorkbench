@@ -1,25 +1,23 @@
-"""数据库后端：SQLite（内置）与 PostgreSQL（外置）。
+"""数据库后端：只支持 PostgreSQL。
 
-上层只通过 `Conn` 暴露的少量方法访问数据库：
+上层只通过 `PgConn` 暴露的少量方法访问数据库：
 
     execute(sql, params) -> cursor   # cursor 支持 .rowcount / .fetchone() / .fetchall()
     executemany(sql, seq)
     script(ddl)                      # 执行多条 DDL
     columns(table) -> set[str]
     tables() -> set[str]
-    ping() -> str                    # 返回服务端版本，用于「测试连接」
+    ping() -> str                    # 返回服务端版本
     commit() / rollback() / close()
 
-SQL 仍然按 SQLite 的 `?` 占位符书写，PostgreSQL 侧在 execute 里统一翻译，
-所以业务代码（routes / services）一行都不用改。
+业务 SQL 统一按 `?` 占位符书写，execute 里翻译成 psycopg 的 `%s`，
+所以 routes / services 里不用关心驱动细节。
 """
 
 from __future__ import annotations
 
 import re
-import sqlite3
 import threading
-from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from .sqlutil import split_statements, translate
@@ -30,50 +28,6 @@ _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 class DatabaseError(RuntimeError):
     """带人话提示的数据库错误。"""
 
-
-# ---------------------------------------------------------------- SQLite
-
-class SqliteConn:
-    name = "sqlite"
-
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        self.raw = sqlite3.connect(str(path), check_same_thread=False, timeout=20)
-        self.raw.row_factory = sqlite3.Row
-        self.raw.execute("PRAGMA journal_mode=WAL")
-        self.raw.execute("PRAGMA foreign_keys=ON")
-        self.raw.execute("PRAGMA busy_timeout=8000")
-
-    def execute(self, sql: str, params: Sequence[Any] = ()):
-        return self.raw.execute(sql, tuple(params))
-
-    def executemany(self, sql: str, seq: Iterable[Sequence[Any]]):
-        return self.raw.executemany(sql, [tuple(p) for p in seq])
-
-    def script(self, ddl: str) -> None:
-        self.raw.executescript(ddl)
-
-    def commit(self) -> None:
-        self.raw.commit()
-
-    def rollback(self) -> None:
-        self.raw.rollback()
-
-    def close(self) -> None:
-        self.raw.close()
-
-    def columns(self, table: str) -> set[str]:
-        return {row["name"] for row in self.raw.execute(f"PRAGMA table_info({table})")}
-
-    def tables(self) -> set[str]:
-        rows = self.raw.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        return {row["name"] for row in rows}
-
-    def ping(self) -> str:
-        return f"SQLite {sqlite3.sqlite_version}"
-
-
-# ------------------------------------------------------------ PostgreSQL
 
 def pg_params(cfg: dict) -> dict:
     """把配置字典转成 psycopg 的连接参数。"""
@@ -90,7 +44,7 @@ def pg_params(cfg: dict) -> dict:
 
 
 _PG_HINTS = {
-    "3D000": "目标数据库不存在（保存时会尝试自动创建）",
+    "3D000": "目标数据库不存在（启动时会尝试自动创建）",
     "28P01": "用户名或密码不正确",
     "28000": "认证失败：请检查用户名/密码，以及 pg_hba.conf 的访问规则",
     "08001": "无法连接到服务器：请检查主机、端口是否可达，以及是否允许远程访问",
@@ -146,7 +100,7 @@ class PgConn:
     name = "postgres"
 
     def __init__(self, cfg: dict, raw=None, release=None, discard=None) -> None:
-        """raw/release 为空时自建连接（用于探测），否则复用连接池借出的连接。"""
+        """raw/release 为空时自建连接，否则复用连接池借出的连接。"""
         self.cfg = cfg
         self._release = release
         self._discard = discard
@@ -188,8 +142,6 @@ class PgConn:
             # 多实例同时首启时避免并发 ALTER/CREATE 打架
             cur.execute("SELECT pg_advisory_xact_lock(7610253)")
             for stmt in split_statements(ddl):
-                if stmt.lstrip().upper().startswith("PRAGMA"):
-                    continue
                 cur.execute(stmt)
             self.raw.commit()
         except Exception:
@@ -260,10 +212,12 @@ def _coerce(params: Sequence[Any]) -> tuple:
     return tuple(out)
 
 
-# --------------------------------------------------------------- 后端选择
+# --------------------------------------------------------------- 后端
 
 class Backend:
-    name = "sqlite"
+    """一个进程一个后端，连的是配置文件里那一个库。"""
+
+    name = "postgres"
 
     def connect(self) -> Any:  # pragma: no cover - 抽象
         raise NotImplementedError
@@ -272,27 +226,13 @@ class Backend:
         return self.name
 
     def close(self) -> None:
-        """切库/关服时释放后端持有的资源（只有 PostgreSQL 有连接池）。"""
-
-
-class SqliteBackend(Backend):
-    name = "sqlite"
-
-    def __init__(self, path: Path) -> None:
-        self.path = path
-
-    def connect(self) -> SqliteConn:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        return SqliteConn(self.path)
-
-    def describe(self) -> str:
-        return f"SQLite · {self.path}"
+        """关服时释放后端持有的资源（连接池）。"""
 
 
 class PostgresBackend(Backend):
     """PostgreSQL 用连接池：线程从池里借连接，用完归还，省掉反复握手。
 
-    池是懒创建的，一个进程一个池；切库时 close() 会把池关掉（异步，不阻塞请求）。
+    池是懒创建的，一个进程一个池；关服时 close() 会把池关掉（异步，不阻塞请求）。
     """
 
     name = "postgres"
@@ -385,63 +325,11 @@ class PostgresBackend(Backend):
         return f"PostgreSQL · {p['user']}@{p['host']}:{p['port']}/{p['dbname']}"
 
 
-def build_backend(cfg: dict, sqlite_path: Path) -> Backend:
-    if (cfg.get("driver") or "sqlite").lower() == "postgres":
-        return PostgresBackend(cfg)
-    return SqliteBackend(sqlite_path)
+def build_backend(cfg: dict) -> Backend:
+    return PostgresBackend(cfg)
 
 
 # ------------------------------------------------------------- 管理型操作
-
-def probe(cfg: dict) -> dict:
-    """测试连接：返回服务端版本。"""
-    conn = PgConn(cfg)
-    try:
-        return {"ok": True, "version": conn.ping()}
-    finally:
-        conn.close()
-
-
-def probe_server(cfg: dict) -> dict:
-    """只关心服务器能不能连上，以及目标库是否存在（不存在也算「服务器可达」）。"""
-    psycopg = _psycopg()
-    params = pg_params(cfg)
-    try:
-        conn = psycopg.connect(**params)
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT current_setting('server_version') AS v, current_database() AS db")
-                row = cur.fetchone()
-            version = f"PostgreSQL {row[0]} / {row[1]}"
-        finally:
-            conn.close()
-        return {"ok": True, "version": version, "databaseExists": True}
-    except psycopg.Error as e:
-        if not is_missing_database(e):
-            return {"ok": False, "message": pg_error_text(e), "databaseExists": False}
-
-    admin = dict(params, dbname="postgres")
-    try:
-        conn = psycopg.connect(**admin)
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT current_setting('server_version')")
-                server = cur.fetchone()[0]
-        finally:
-            conn.close()
-    except psycopg.Error as e:
-        return {
-            "ok": False,
-            "message": f"服务器可连接，但目标库不存在，且无法自动创建：{pg_error_text(e)}",
-            "databaseExists": False,
-        }
-
-    return {
-        "ok": True,
-        "version": f"PostgreSQL {server} / {params['dbname']}（尚未创建）",
-        "databaseExists": False,
-    }
-
 
 def ensure_database(cfg: dict) -> bool:
     """目标库不存在时用维护库（postgres）建一个，返回是否新建。"""
@@ -475,11 +363,9 @@ __all__ = [
     "DatabaseError",
     "PgConn",
     "PostgresBackend",
-    "SqliteBackend",
-    "SqliteConn",
     "build_backend",
     "ensure_database",
+    "is_missing_database",
     "pg_error_text",
     "pg_params",
-    "probe",
 ]

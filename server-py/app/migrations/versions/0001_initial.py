@@ -5,7 +5,7 @@ Revises:
 Create Date: 2026-10-30
 
 设计要点：
-- DDL 只用 SQLite 与 PostgreSQL 都支持的语法（布尔值一律 INTEGER 0/1）；
+- DDL 用 PostgreSQL 语法，布尔值仍统一用 INTEGER 0/1，与业务 SQL 保持一致；
 - 全部操作幂等：新库从零建表，老库（已经跑过 schema.sql 的）只会被补齐缺的列/索引；
 - 这样不需要区分「新库 baseline」和「老库升级」，直接 upgrade head 就行。
 """

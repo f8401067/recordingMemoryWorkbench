@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   AlertTriangle, ArrowLeft, Check, FileUp, Loader2, Mic, Pause, Play, Square, Upload,
 } from 'lucide-react';
@@ -8,6 +8,7 @@ import { api, uploadChunk, uploadFile, type RecordingDetail } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useToast } from '../lib/toast';
 import { cn, fmtDuration } from '../lib/utils';
+import { AUDIO_CONSTRAINTS, takeMicStream, supportsMic } from '../lib/micStream';
 
 type Phase = 'idle' | 'recording' | 'paused' | 'finishing';
 
@@ -26,6 +27,7 @@ function pickMimeType(): string {
 
 export default function RecordPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const toast = useToast();
   const { settings } = useAuth();
 
@@ -59,7 +61,7 @@ export default function RecordPage() {
   const wakeLockRef = useRef<any>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const chunkSeconds = Math.max(10, Math.min(120, settings?.chunkSeconds ?? 30));
+  const chunkSeconds = Math.max(10, Math.min(120, settings?.chunkSeconds ?? 120));
 
   const setPhaseBoth = (p: Phase) => {
     phaseRef.current = p;
@@ -108,7 +110,10 @@ export default function RecordPage() {
   const startSegment = useCallback(() => {
     const s = streamRef.current;
     if (!s) return;
-    const opts: MediaRecorderOptions = mimeRef.current ? { mimeType: mimeRef.current } : {};
+    // 16kHz 单声道语音用 48kbps 的 Opus 已经接近透明，默认码率通常是它的 2~3 倍，
+    // 纯属白耗流量和网络唤醒；再低就开始影响识别了。
+    const base: MediaRecorderOptions = { audioBitsPerSecond: 48000 };
+    const opts: MediaRecorderOptions = mimeRef.current ? { ...base, mimeType: mimeRef.current } : base;
     let rec: MediaRecorder;
     try {
       rec = new MediaRecorder(s, opts);
@@ -163,17 +168,11 @@ export default function RecordPage() {
     }, 3500);
   };
 
-  const start = async () => {
+  const start = async (presetStream?: MediaStream | null) => {
     setError(null);
     try {
-      const s = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          channelCount: 1,
-        },
-      });
+      const s = presetStream
+        ?? await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS);
       streamRef.current = s;
       setStream(s);
       mimeRef.current = pickMimeType();
@@ -224,6 +223,23 @@ export default function RecordPage() {
       setPhaseBoth('idle');
     }
   };
+
+  const autoStartedRef = useRef(false);
+
+  // 从首页「录音」入口进来时自动开录：首页已在点击手势里预热麦克风，这里直接接管。
+  const wantAutoStart = Boolean((location.state as { autoStart?: boolean } | null)?.autoStart);
+  useEffect(() => {
+    if (!wantAutoStart || autoStartedRef.current) return;
+    autoStartedRef.current = true;
+    // 用掉后清掉路由 state，避免刷新/回退时又自动录一次
+    navigate(location.pathname, { replace: true, state: null });
+    if (!supportsMic()) {
+      setSecure(false);
+      return;
+    }
+    void start(takeMicStream());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wantAutoStart]);
 
   const pause = () => {
     if (phaseRef.current !== 'recording') return;
@@ -384,7 +400,7 @@ export default function RecordPage() {
 
           {!running ? (
             <button
-              onClick={start}
+              onClick={() => void start()}
               disabled={phase === 'finishing' || !secure}
               className={cn(
                 'relative h-[86px] w-[86px] rounded-full grid place-items-center transition-all',

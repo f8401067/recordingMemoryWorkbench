@@ -7,16 +7,81 @@
 #include "app_config.h"
 #include "board.h"
 #include "esp_log.h"
+#if CONFIG_RECALL_DISPLAY_EPAPER_154
+#include "epd_panel.h"
+#else
 #include "lcd_panel.h"
 #include "ui_font.h"
+#endif
 
 static const char *TAG = "disp";
 
-#if CONFIG_RECALL_DISPLAY_ST7789_320
+#if CONFIG_RECALL_DISPLAY_EPAPER_154
 
 /* ------------------------------------------------------------------ *
- * ST7789V2 320x240（正点原子 BOX3 这块屏）
+ * 1.54" 电子墨水屏 200x200（微雪 ESP32-S3-ePaper-1.54）
+ *
+ * 墨水屏刷新一次要几百毫秒，所以 display_render() 只是"提交"，
+ * 真正的 SPI 传输在 epd_panel 的后台任务里跑，主循环不会被卡住。
+ * 需要保证用户看到的画面（配网页 / 设备码）走 display_render_blocking()。
+ * ------------------------------------------------------------------ */
+static bool s_ok;
+
+esp_err_t display_init(void)
+{
+    esp_err_t err = epd_init();
+    if (err != ESP_OK) {
+        /* 屏没起来不影响录音，别让它拖死开机 */
+        ESP_LOGW(TAG, "墨水屏没起来（%s），按无屏跑", esp_err_to_name(err));
+        return ESP_OK;
+    }
+    s_ok = true;
+    return ESP_OK;
+}
+
+bool display_available(void)
+{
+    return s_ok;
+}
+
+void display_render(const screen_model_t *m)
+{
+    if (!s_ok || !m) {
+        return;
+    }
+    epd_ui_render(m);
+}
+
+void display_render_blocking(const screen_model_t *m)
+{
+    if (!s_ok || !m) {
+        return;
+    }
+    /* 关闭/清网这类"必须让人看见"的页面可能从暂停状态过来（屏是断电的），
+     * 先恢复面板再刷；没断过电时 epd_resume() 是空操作 */
+    epd_resume();
+    epd_ui_render_blocking(m);
+}
+
+void display_power(bool on)
+{
+    if (!s_ok) {
+        return;
+    }
+    if (on) {
+        epd_resume();
+    } else {
+        epd_power_off();
+    }
+}
+
+#elif CONFIG_RECALL_DISPLAY_ST7789
+
+/* ------------------------------------------------------------------ *
+ * ST7789 彩色 SPI 屏（分辨率跟板级走：BOX0 240x240、BOX3 320x240）
  * 排版在 lcd_ui.c，这里只管把面板拉起来
+ *
+ * 注意宏名要和 Kconfig 里的一致：是 RECALL_DISPLAY_ST7789，没有 _320 后缀
  * ------------------------------------------------------------------ */
 static bool s_ok;
 
@@ -43,6 +108,12 @@ void display_render(const screen_model_t *m)
         return;
     }
     lcd_ui_render(m);
+}
+
+void display_render_blocking(const screen_model_t *m)
+{
+    /* 彩色屏刷新只要几十毫秒，普通 render 就是同步的 */
+    display_render(m);
 }
 
 void display_power(bool on)
@@ -545,6 +616,12 @@ void display_render(const screen_model_t *m)
         cv_text(1, 57, 1, m->hint);
         break;
 
+    case SCR_PAUSED:
+        cv_text_centered(14, 2, "PAUSED");
+        cv_text_centered(36, 1, m->line[0] ? m->line : "MIC + REC OFF");
+        cv_text(1, 57, 1, m->hint[0] ? m->hint : "PWR: RESUME");
+        break;
+
     case SCR_READY:
     default:
         cv_text_centered(14, 2, "HOLD 0.7S");
@@ -561,4 +638,10 @@ void display_render(const screen_model_t *m)
     flush();
 }
 
-#endif /* !CONFIG_RECALL_DISPLAY_ST7789_320 */
+void display_render_blocking(const screen_model_t *m)
+{
+    /* 单色屏 flush 是同步的，直接转给普通 render */
+    display_render(m);
+}
+
+#endif /* 单色 128x64 通道 */

@@ -16,8 +16,11 @@
 
 typedef enum {
     UI_EV_NONE = 0,
-    UI_EV_SHORT, /* 短按：留给以后做"查状态" */
-    UI_EV_LONG,  /* 长按：开始 / 结束录音 */
+    UI_EV_SHORT,  /* 单击：暂时不用 */
+    UI_EV_DOUBLE, /* 双击：开始 / 结束录音 */
+    UI_EV_TRIPLE, /* 三击：进配网（不清凭据） */
+    UI_EV_LONG,   /* 长按 0.7 秒：停止录音并回到待机 */
+    UI_EV_RESET,  /* 长按 3 秒：清除配网信息并重启进配网 */
 } ui_event_t;
 
 typedef enum {
@@ -33,6 +36,7 @@ typedef enum {
     LED_ON,
     LED_BLINK_SLOW,
     LED_BLINK_FAST,
+    LED_DIM, /* 微亮：暂停状态用作"还活着但没在录"的提示 */
 } ui_led_mode_t;
 
 esp_err_t ui_init(void);

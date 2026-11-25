@@ -137,6 +137,12 @@ def update_provider(
 
     sets: list[str] = []
     params: list[Any] = []
+    if body.get("kind") is not None:
+        kind = str(body["kind"]).strip()
+        if not kind:
+            raise HTTPException(400, "接口类型不能为空")
+        sets.append("kind = ?")
+        params.append(kind)
     if body.get("name") is not None:
         sets.append("name = ?")
         params.append(str(body["name"])[:40])
@@ -226,10 +232,11 @@ def stats(user: dict = Depends(current_user)) -> dict:
         "SELECT COUNT(*) AS n FROM summaries WHERE user_id = ?",
         (user["id"],),
     ) or {"n": 0}
-    days = one(
-        "SELECT COUNT(DISTINCT substr(started_at,1,10)) AS n FROM recordings WHERE user_id = ?",
+    day_rows = all_(
+        "SELECT started_at FROM recordings WHERE user_id = ?",
         (user["id"],),
-    ) or {"n": 0}
+    )
+    days = {"n": len({local_date(r["started_at"]) for r in day_rows})}
     active_jobs = one(
         "SELECT COUNT(*) AS n FROM jobs WHERE status IN ('pending','running')"
     ) or {"n": 0}

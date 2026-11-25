@@ -1,38 +1,27 @@
-"""数据库连接的持久化配置。
+"""数据库连接配置：只从配置文件读，界面不再提供修改入口。
 
-连接信息写在 `<DATA_DIR>/config.json`，容器部署时随 `data/` 卷一起保留：::
+配置写在 `server-py/.env`（容器部署时写在 `docker-compose.yml` 的环境变量里）::
 
-    {
-      "database": {
-        "driver": "postgres",
-        "host": "127.0.0.1",
-        "port": 5432,
-        "database": "recall",
-        "user": "postgres",
-        "password": "******",
-        "sslmode": "prefer",
-        "schema": "public"
-      }
-    }
+    DATABASE_URL=postgresql://recall:secret@127.0.0.1:5432/recall?sslmode=disable&schema=public
 
-也支持用环境变量 `DATABASE_URL` 强制指定（优先级最高，用于 12-factor 部署），
-此时文件里的配置会被忽略，界面上只读展示。
+支持的查询参数：
+
+- `sslmode`：`disable` / `prefer` / `require` / `verify-full`，默认 `prefer`
+- `schema`：表放在哪个 schema，默认 `public`（不存在会自动创建）
+
+改完配置需要重启后端才生效。数据库只支持 PostgreSQL。
 """
 
 from __future__ import annotations
 
-import json
 import os
-from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
-from .config import DATA_DIR
+from .config import ENV_FILE
 
-CONFIG_PATH = DATA_DIR / "config.json"
-SQLITE_PATH = DATA_DIR / "recall.db"
+ENV_KEY = "DATABASE_URL"
 
 DEFAULTS: dict[str, object] = {
-    "driver": "sqlite",
     "host": "127.0.0.1",
     "port": 5432,
     "database": "recall",
@@ -40,120 +29,112 @@ DEFAULTS: dict[str, object] = {
     "password": "",
     "sslmode": "prefer",
     "schema": "public",
+    "pool_size": 10,
+    "connect_timeout": 6,
 }
 
+_SCHEMES = ("postgres", "postgresql")
 
-def _read_file() -> dict:
+
+class ConfigError(RuntimeError):
+    """配置缺失或写错。"""
+
+
+def raw_url() -> str:
+    return (os.getenv(ENV_KEY) or "").strip()
+
+
+def configured() -> bool:
+    return bool(raw_url())
+
+
+def normalize(cfg: dict) -> dict:
+    """约束类型与取值范围，避免把明显写错的配置带进连接串。"""
+    out = dict(DEFAULTS)
+    out.update({k: v for k, v in (cfg or {}).items() if v is not None})
+
+    out["host"] = str(out.get("host") or "127.0.0.1").strip()[:120]
     try:
-        raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        return raw if isinstance(raw, dict) else {}
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-
-def _from_url(url: str) -> dict:
-    parsed = urlparse(url)
-    cfg = dict(DEFAULTS)
-    cfg.update(
-        {
-            "driver": "postgres",
-            "host": parsed.hostname or "127.0.0.1",
-            "port": parsed.port or 5432,
-            "database": (parsed.path or "/recall").lstrip("/") or "recall",
-            "user": unquote(parsed.username or "postgres"),
-            "password": unquote(parsed.password or ""),
-        }
-    )
-    query = parsed.query or ""
-    for part in query.split("&"):
-        if part.startswith("sslmode="):
-            cfg["sslmode"] = part.split("=", 1)[1] or "prefer"
-        elif part.startswith("options=") or part.startswith("schema="):
-            cfg["schema"] = unquote(part.split("=", 1)[1]) or "public"
-    return cfg
-
-
-def normalize(section: dict) -> dict:
-    """约束类型与取值范围，避免把明显写错的配置落盘。"""
-    cfg = dict(DEFAULTS)
-    cfg.update({k: v for k, v in (section or {}).items() if v is not None})
-
-    cfg["driver"] = "postgres" if str(cfg.get("driver") or "sqlite").lower() in (
-        "postgres",
-        "postgresql",
-        "pg",
-    ) else "sqlite"
-    cfg["host"] = str(cfg.get("host") or "127.0.0.1").strip()[:120]
-    try:
-        cfg["port"] = max(1, min(65535, int(cfg.get("port") or 5432)))
+        out["port"] = max(1, min(65535, int(out.get("port") or 5432)))
     except (TypeError, ValueError):
-        cfg["port"] = 5432
-    cfg["database"] = str(cfg.get("database") or "recall").strip()[:63] or "recall"
-    cfg["user"] = str(cfg.get("user") or "postgres").strip()[:63]
-    cfg["password"] = str(cfg.get("password") or "")[:200]
-    cfg["sslmode"] = str(cfg.get("sslmode") or "prefer").strip()[:16]
-    cfg["schema"] = str(cfg.get("schema") or "public").strip()[:63] or "public"
-    return cfg
+        out["port"] = 5432
+    out["database"] = str(out.get("database") or "recall").strip()[:63] or "recall"
+    out["user"] = str(out.get("user") or "postgres").strip()[:63]
+    out["password"] = str(out.get("password") or "")[:200]
+    out["sslmode"] = str(out.get("sslmode") or "prefer").strip()[:16]
+    out["schema"] = str(out.get("schema") or "public").strip()[:63] or "public"
+    try:
+        out["pool_size"] = max(1, min(50, int(out.get("pool_size") or 10)))
+    except (TypeError, ValueError):
+        out["pool_size"] = 10
+    return out
 
 
-def has_env_override() -> bool:
-    return bool((os.getenv("DATABASE_URL") or "").strip())
+def parse_url(url: str) -> dict:
+    parsed = urlparse(url)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in _SCHEMES:
+        raise ConfigError(
+            f"{ENV_KEY} 只支持 PostgreSQL 连接串（postgresql://...），当前是：{scheme or '空'}"
+        )
+
+    cfg = {
+        "host": parsed.hostname or "127.0.0.1",
+        "port": parsed.port or 5432,
+        "database": (parsed.path or "/recall").lstrip("/") or "recall",
+        "user": unquote(parsed.username or "postgres"),
+        "password": unquote(parsed.password or ""),
+    }
+    params = parse_qs(parsed.query or "")
+    for key in ("sslmode", "schema", "pool_size"):
+        if params.get(key):
+            cfg[key] = params[key][0]
+    if params.get("options"):
+        # 兼容 psycopg 风格的 options=-c search_path=xxx
+        for part in unquote(params["options"][0]).split():
+            if part.startswith("search_path="):
+                cfg["schema"] = part.split("=", 1)[1].strip('"')
+    return normalize(cfg)
+
+
+_cache: dict | None = None
 
 
 def load_db_config() -> dict:
-    """当前生效的数据库配置（环境变量优先）。"""
-    url = (os.getenv("DATABASE_URL") or "").strip()
-    if url:
-        return _from_url(url)
-    return normalize(_read_file().get("database") or {})
+    """当前生效的数据库配置；没配或写错时抛 ConfigError。"""
+    global _cache
+    if _cache is not None:
+        return _cache
 
-
-def save_db_config(section: dict) -> None:
-    """合并写入 config.json，保留文件里其他段落。"""
-    data = _read_file()
-    data["database"] = normalize(section)
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = CONFIG_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(CONFIG_PATH)
+    url = raw_url()
+    if not url:
+        raise ConfigError(
+            f"没有配置数据库。请在 {ENV_FILE} 里填写：\n"
+            f"  {ENV_KEY}=postgresql://用户:密码@主机:5432/recall?sslmode=disable"
+        )
+    _cache = parse_url(url)
+    return _cache
 
 
 def describe(cfg: dict | None = None) -> str:
-    cfg = cfg or load_db_config()
-    if cfg["driver"] == "sqlite":
-        return f"SQLite · {SQLITE_PATH}"
+    """给人看的连接描述（不含密码），配置不可用时给出提示而不是抛异常。"""
+    try:
+        cfg = cfg or load_db_config()
+    except ConfigError:
+        return "PostgreSQL · 未配置（DATABASE_URL 为空）"
     return (
         f"PostgreSQL · {cfg['user']}@{cfg['host']}:{cfg['port']}/{cfg['database']}"
-        f"（schema={cfg.get('schema') or 'public'}）"
+        f"（schema={cfg['schema']}，sslmode={cfg['sslmode']}）"
     )
 
 
-def public_config() -> dict:
-    """给前端用的视图：不回传密码明文，只告诉它密码有没有配过。"""
-    cfg = load_db_config()
-    return {
-        "driver": cfg["driver"],
-        "host": cfg["host"],
-        "port": cfg["port"],
-        "database": cfg["database"],
-        "user": cfg["user"],
-        "sslmode": cfg["sslmode"],
-        "schema": cfg["schema"],
-        "hasPassword": bool(cfg["password"]),
-        "target": describe(cfg),
-        "configPath": str(CONFIG_PATH),
-        "sqlitePath": str(SQLITE_PATH),
-        "fromEnv": has_env_override(),
-    }
-
-
 __all__ = [
-    "CONFIG_PATH",
-    "SQLITE_PATH",
+    "ConfigError",
+    "ENV_KEY",
+    "configured",
     "describe",
-    "has_env_override",
     "load_db_config",
     "normalize",
-    "public_config",
-    "save_db_config",
+    "parse_url",
+    "raw_url",
 ]

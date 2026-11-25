@@ -9,7 +9,7 @@
   （需要先在 alembic.ini 里填 sqlalchemy.url，或直接用下面的 Python 入口）
 - 新增迁移：`uv run alembic -c alembic.ini revision -m "xxx"`，然后手写 SQL
 
-迁移脚本写的是两库通用的 SQL，所以 SQLite 与 PostgreSQL 共用一套历史。
+迁移脚本写的是标准 PostgreSQL DDL，结构演进只维护这一套历史。
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from urllib.parse import quote
 from alembic import command
 from alembic.config import Config
 
-from .db_config import SQLITE_PATH, load_db_config
+from .db_config import load_db_config
 
 APP_DIR = Path(__file__).resolve().parent
 SERVER_DIR = APP_DIR.parent
@@ -32,11 +32,8 @@ _lock = threading.Lock()
 
 
 def database_url(cfg: dict | None = None) -> str:
-    """把当前数据库配置转成 SQLAlchemy URL（只为迁移引擎服务，查询不走 SQLAlchemy）。"""
+    """把数据库配置转成 SQLAlchemy URL（只为迁移引擎服务，查询不走 SQLAlchemy）。"""
     cfg = cfg or load_db_config()
-    if cfg["driver"] == "sqlite":
-        return f"sqlite:///{SQLITE_PATH}"
-
     user = quote(cfg["user"], safe="")
     password = quote(cfg["password"], safe="")
     query = f"?sslmode={quote(cfg['sslmode'], safe='')}"

@@ -1,11 +1,10 @@
 """SQL 方言转换工具。
 
-项目里的 SQL 一直按 SQLite 的 `?` 占位符书写，为了让同一份语句也能跑在 PostgreSQL
-上，这里做两件事：
+项目里的 SQL 统一按 `?` 占位符书写，驱动侧（PostgreSQL）由本模块改写成 psycopg 的
+`%s`，业务代码因此不用到处照顾驱动差异。这里做两件事：
 
 1. `translate()`：`?` → `%s`，并把字面量 `%` 转义成 `%%`（psycopg 的 pyformat 需求）；
-2. `split_statements()`：把 `schema.sql` 这种多语句脚本切成单条，供不支持
-   `executescript()` 的驱动逐条执行。
+2. `split_statements()`：把多语句脚本切成单条，供不支持一次执行多语句的驱动逐条跑。
 
 两者都是逐字符扫描的，会跳过字符串字面量、注释和 PostgreSQL 的 $tag$ 引用，
 避免把 `'?'`、`'100%%'` 这类内容误伤。
@@ -35,7 +34,7 @@ def _dollar_end(sql: str, i: int) -> int:
 
 
 def translate(sql: str) -> str:
-    """把 SQLite 风格的占位符改写成 psycopg 的 `%s`。"""
+    """把业务 SQL 里的 `?` 占位符改写成 psycopg 的 `%s`。"""
     out: list[str] = []
     i = 0
     n = len(sql)

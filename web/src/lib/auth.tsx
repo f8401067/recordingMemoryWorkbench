@@ -17,11 +17,18 @@ type AuthState = {
 const Ctx = createContext<AuthState>(null as any);
 
 export const DEFAULT_SETTINGS: UserSettings = {
-  chunkSeconds: 30,
+  chunkSeconds: 120,
   autoSummarize: true,
+  speakerDiarization: false,
+  diarizationThreshold: 0.7,
   summaryProviderId: null,
   summaryTemplate: 'meeting',
   summaryPrompt: '',
+  promptDay: '',
+  promptWeek: '',
+  promptMonth: '',
+  promptYear: '',
+  promptRange: '',
   language: 'zh',
   theme: 'system',
 };

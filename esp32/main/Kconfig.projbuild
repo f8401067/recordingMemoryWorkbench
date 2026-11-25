@@ -48,7 +48,16 @@ menu "忆录录音笔"
 
         choice RECALL_BOARD
             prompt "开发板"
-            default RECALL_BOARD_BOX0
+            default RECALL_BOARD_WS_EPAPER_154
+
+            config RECALL_BOARD_WS_EPAPER_154
+                bool "微雪 ESP32-S3-ePaper-1.54（200x200 墨水屏 + ES8311）"
+                depends on IDF_TARGET_ESP32S3
+                help
+                    板载 1.54 寸 200x200 单色电子墨水屏（SPI）、ES8311 编解码芯片
+                    （录音+播放一颗搞定，必须给 MCLK）、BOOT(GPIO0) 和 PWR(GPIO18) 两个按键。
+                    墨水屏刷新慢但断电后画面保留，非常适合长时间待机的录音笔。
+                    引脚取自官方示例仓库 02_Example/ESP-IDF/V2/08_Audio_Test。
 
             config RECALL_BOARD_BOX0
                 bool "正点原子 ATK-DNESP32S3 BOX0（240x240 ST7789 + ES8311）"
@@ -73,6 +82,7 @@ menu "忆录录音笔"
 
         choice RECALL_DISPLAY_TYPE
             prompt "屏幕类型"
+            default RECALL_DISPLAY_EPAPER_154 if RECALL_BOARD_WS_EPAPER_154
             default RECALL_DISPLAY_ST7789 if RECALL_BOARD_BOX0
             default RECALL_DISPLAY_ST7789 if RECALL_BOARD_BOX3
             default RECALL_DISPLAY_AUTO
@@ -96,6 +106,12 @@ menu "忆录录音笔"
             config RECALL_DISPLAY_ST7789
                 bool "ST7789 彩色屏（SPI，分辨率跟板级走）"
 
+            config RECALL_DISPLAY_EPAPER_154
+                bool "电子墨水屏 1.54 寸 200x200（SPI，单色）"
+                help
+                    刷新一次要几百毫秒，所以刷新放在后台任务里做，主循环不等待。
+                    录音计时按 10 秒量化显示，电平条和闪烁点不画（实时反馈看 LED）。
+
         endchoice
 
         config RECALL_LCD_PCLK_MHZ
@@ -114,6 +130,41 @@ menu "忆录录音笔"
             help
                 方屏（240x240）保持 0 就行；320x240 横屏用 1。
                 画面上下颠倒或镜像时改这里，不用动代码。
+
+        config RECALL_SD_ENABLE
+            bool "用 TF 卡存录音（不插卡自动退回片内 Flash）"
+            default n
+            help
+                打开后启动时先尝试挂载 TF 卡：挂上了就用卡存；没插卡、卡不是 FAT32
+                或者引脚填错，都会自动退回片内 LittleFS（约 5MB / 55 分钟纯语音），
+                录音和上传流程完全不受影响。
+
+                用途：出门一整天没法上传时，片内 5MB 只能存两小时出头，
+                插 32GB 卡可以存几个月。回家连上 WiFi 再补传。
+
+                卡要格式化成 FAT32。这块板子的 TF 槽是 **SDMMC 1-bit**
+                （CLK/CMD/D0 三根线，没有 CS），不是 SPI。
+
+                微雪 ESP32-S3-Touch-ePaper-1.54 原理图实测：
+                  CLK=GPIO39  CMD=GPIO41  D0=GPIO40（SD_CS / CD 未连接）
+
+        config RECALL_SD_CLK
+            int "TF 卡 CLK (GPIO)"
+            depends on RECALL_SD_ENABLE
+            range -1 53
+            default -1
+
+        config RECALL_SD_CMD
+            int "TF 卡 CMD (GPIO)"
+            depends on RECALL_SD_ENABLE
+            range -1 53
+            default -1
+
+        config RECALL_SD_D0
+            int "TF 卡 D0 / DAT0 (GPIO)"
+            depends on RECALL_SD_ENABLE
+            range -1 53
+            default -1
 
     endmenu
 
@@ -157,6 +208,33 @@ menu "忆录录音笔"
             default 8000
             range 2000 120000
 
+        config RECALL_ALWAYS_ON
+            bool "常驻监听：开机就守麦，有人声才落盘"
+            default n
+            help
+                打开后设备不再「按一下录一次」，而是常驻监听：
+                检测到人声自动开录，静音超过 RECALL_SILENCE_SPLIT_MS
+                就收尾、把已录文件上传、清空本地暂存，然后继续守麦。
+                这个模式不深睡（否则就没法守麦），待机电流约 18~25mA。
+
+        config RECALL_SILENCE_SPLIT_MS
+            int "常驻模式：静音多久算一段说完 (ms)"
+            depends on RECALL_ALWAYS_ON
+            default 60000
+            range 10000 600000
+            help
+                静音超过这个时长就收尾：上传已录文件、清空本地暂存，
+                然后回到监听。太短会把正常停顿切成两条，太长会让
+                Flash 里堆更多音频（15 秒一片，60 秒约 4 片 / 90KB 左右）。
+
+        config RECALL_QUIET_SCREEN
+            bool "常驻监听/录音时不刷新屏幕（省电）"
+            depends on RECALL_ALWAYS_ON
+            default y
+            help
+                墨水屏刷一次要几百毫秒、整屏闪一下。打开后只在状态切换
+                时画一帧，录音计时和电平不再更新。
+
     endmenu
 
     menu "省电"
@@ -169,6 +247,15 @@ menu "忆录录音笔"
                 没在录音也没有待上传文件时，超过这个时间就进深睡，
                 电流从 ~18mA 降到 ~10uA，按一下按键唤醒。
                 0 表示永不深睡（调试时用）。
+
+        config RECALL_PERIODIC_UPLOAD_S
+            int "定时补传间隔（秒，0=关闭）"
+            default 0
+            range 0 86400
+            help
+                有积压录音时，最多等这么久就主动开一次 WiFi 补传，并让服务端收尾
+                （生成转写和纪要）。4 小时 = 14400。
+                设为 0 则只在「存储快满 / 双击 BOOT / 开机」时才传。
 
         config RECALL_UPLOAD_RETRY
             int "上传失败重试次数"

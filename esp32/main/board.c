@@ -155,6 +155,25 @@ void board_led(bool on)
 
 #endif
 
+/* 外设供电开关。BOARD_PWR_EN_ACTIVE_LOW 的板子（微雪 ePaper）写 0 才是"开" */
+static void pwr_set(int pin, bool on)
+{
+    if (pin == PIN_NC) {
+        return;
+    }
+    gpio_set_level((gpio_num_t)pin, (on != (bool)BOARD_PWR_EN_ACTIVE_LOW) ? 1 : 0);
+}
+
+void board_audio_power(bool on)
+{
+    pwr_set(PIN_CODEC_PWR, on);
+}
+
+void board_epd_power(bool on)
+{
+    pwr_set(PIN_EPD_PWR, on);
+}
+
 i2c_master_bus_handle_t board_i2c_bus(void)
 {
     return s_bus;
@@ -165,6 +184,20 @@ esp_err_t board_init(void)
     if (s_bus) {
         return ESP_OK;
     }
+
+#if PIN_VBAT_EN != PIN_NC
+    /* 电池供电自锁：必须第一件事就拉高。按 PWR 开机靠的是按键给的瞬时电，
+     * 固件不把 VBAT_PWR 拉起来，松手（或者拔掉 USB）就断电。 */
+    {
+        gpio_config_t vbat = {
+            .pin_bit_mask = 1ULL << PIN_VBAT_EN,
+            .mode = GPIO_MODE_OUTPUT,
+        };
+        gpio_config(&vbat);
+        gpio_set_level(PIN_VBAT_EN, 1);
+        ESP_LOGI(TAG, "电池供电自锁已拉高（GPIO%d），拔掉 USB 也能继续跑", (int)PIN_VBAT_EN);
+    }
+#endif
 
 #if BOARD_I2C_SCAN
     /* 穷举几个候选 SDA/SCL 组合，把真实引脚找出来（找到后写死到 app_config.h）。
@@ -234,27 +267,55 @@ esp_err_t board_init(void)
     gpio_set_level(PIN_LCD_BL, 0);
 #endif
 
+    /* 各路外设供电：注意有的板子是低电平使能（BOARD_PWR_EN_ACTIVE_LOW） */
+    uint64_t pw_mask = 0;
 #if PIN_SYS_POW != PIN_NC
-    /* 电池产品的电源自锁：不拉高 SYS_POW 松手就断电；
-     * CODEC_PWR 不拉高 ES8311 没电，录音就是纯静音 */
-    gpio_config_t pw = {
-        .pin_bit_mask = (1ULL << PIN_SYS_POW) | (1ULL << PIN_CODEC_PWR) | (1ULL << PIN_PA_EN),
-        .mode = GPIO_MODE_OUTPUT,
+    pw_mask |= 1ULL << PIN_SYS_POW;
+#endif
+#if PIN_CODEC_PWR != PIN_NC
+    pw_mask |= 1ULL << PIN_CODEC_PWR;
+#endif
+#if PIN_PA_EN != PIN_NC
+    pw_mask |= 1ULL << PIN_PA_EN;
+#endif
+#if PIN_EPD_PWR != PIN_NC
+    pw_mask |= 1ULL << PIN_EPD_PWR;
+#endif
+    /* VBAT_EN 在上面（board_init 开头）已经 gpio_config 过：这里再配一次
+     * 会让 IDF 打 "conflict found for GPIO[17]"，所以只补一次电平，不再重复配置 */
+    if (pw_mask) {
+        gpio_config_t pw = {
+            .pin_bit_mask = pw_mask,
+            .mode = GPIO_MODE_OUTPUT,
+        };
+        gpio_config(&pw);
+#if PIN_SYS_POW != PIN_NC
+        /* 电池产品的电源自锁：不拉高 SYS_POW 松手就断电 */
+        gpio_set_level(PIN_SYS_POW, 1);
+#endif
+        board_audio_power(true);
+#if PIN_PA_EN != PIN_NC
+        /* 功放先关着，放提示音时再开。低电平使能的板子同理取反 */
+        gpio_set_level(PIN_PA_EN, BOARD_PWR_EN_ACTIVE_LOW ? 1 : 0);
+#endif
+        board_epd_power(true);
+#if PIN_VBAT_EN != PIN_NC
+        gpio_set_level(PIN_VBAT_EN, 1); /* 电池自锁：保持供电（上面已经拉过一次，这里确保） */
+#endif
+    }
+
+#if PIN_PWR_KEY != PIN_NC
+    /* 电源键：输入上拉，按下接地（长按 1.5 秒关机由 app.c 判定） */
+    gpio_config_t pwr = {
+        .pin_bit_mask = 1ULL << PIN_PWR_KEY,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ONLY,
+        .intr_type = GPIO_INTR_DISABLE,
     };
-    gpio_config(&pw);
-    gpio_set_level(PIN_SYS_POW, 1);
-    gpio_set_level(PIN_CODEC_PWR, 1);
-    gpio_set_level(PIN_PA_EN, 0); /* 功放先关着，放提示音时再开 */
+    gpio_config(&pwr);
 #endif
 
-#if PIN_LED != PIN_NC
-    /* 普通板子的 LED 是直连的，这里顺手配好 */
-    gpio_config_t led = {
-        .pin_bit_mask = 1ULL << PIN_LED,
-        .mode = GPIO_MODE_OUTPUT,
-    };
-    gpio_config(&led);
-    board_led(false);
-#endif
+    /* LED 由 ui_init() 统一配置（只配一次）。这里再 gpio_config 会报
+     * "conflict found for GPIO[3]"，而且板载灯本来就归 UI 管。 */
     return ESP_OK;
 }

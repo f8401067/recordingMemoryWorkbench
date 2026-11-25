@@ -4,7 +4,6 @@ import asyncio
 import json
 import mimetypes
 import queue as queue_mod
-import shutil
 import time
 import urllib.parse
 from pathlib import Path
@@ -20,7 +19,13 @@ from ..db import all_, execute, now_iso, one
 from ..jobs import drain, enqueue
 from ..security import current_user, media_user
 from ..services.summarize import create_summary, local_date, public_summary
-from ..services.transcribe import finalize_recording, fmt_clock, parse_segments, transcript_for
+from ..services.transcribe import (
+    discard_recording,
+    finalize_recording,
+    fmt_clock,
+    parse_segments,
+    transcript_for,
+)
 
 router = APIRouter(prefix="/api/recordings", tags=["recordings"])
 
@@ -35,12 +40,36 @@ def _squash(text: str) -> str:
     return " ".join(str(text or "").split())
 
 
+def _json_list(raw: str | None) -> list[dict]:
+    if not raw:
+        return []
+    try:
+        arr = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return arr if isinstance(arr, list) else []
+
+
 def _excerpt(text: str, limit: int = 160) -> str:
     """转写正文摘要：列表里用来替代"约 xx 千字"这种没有信息量的描述。"""
     clean = _squash(text)
     if len(clean) <= limit:
         return clean
     return clean[:limit].rstrip("，。,.、；; ") + "…"
+
+
+def _summary_highlights(stats_raw: str | None) -> list[str]:
+    """从纪要 stats 里取 AI 整理的关键信息，列表卡片直接展示。"""
+    if not stats_raw:
+        return []
+    try:
+        stats = json.loads(stats_raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    raw = stats.get("highlights") if isinstance(stats, dict) else None
+    if not isinstance(raw, list):
+        return []
+    return [str(x).strip() for x in raw if str(x).strip()][:6]
 
 
 def _transcript_text(recording_id: str, limit: int = 4000) -> str:
@@ -114,7 +143,7 @@ def recording_card(r: dict, excerpt: str | None = None) -> dict:
     ) or {}
 
     summary = one(
-        """SELECT id, status, title FROM summaries WHERE recording_id = ?
+        """SELECT id, status, title, stats FROM summaries WHERE recording_id = ?
            ORDER BY created_at DESC LIMIT 1""",
         (r["id"],),
     )
@@ -137,10 +166,23 @@ def recording_card(r: dict, excerpt: str | None = None) -> dict:
         "failedChunks": agg.get("failed") or 0,
         "charCount": agg.get("chars") or 0,
         "excerpt": excerpt,
+        "mergedCount": int(r.get("merged_count") or 0),
+        "lowValue": bool(r.get("low_value")),
+        "lowReason": r.get("low_reason") or None,
         "summaryStatus": r["summary_status"],
         "summaryId": summary["id"] if summary else None,
         "summaryTitle": summary["title"] if summary else None,
+        "summaryHighlights": (
+            _summary_highlights(summary.get("stats"))
+            if summary and summary.get("status") == "ready"
+            else []
+        ),
         "memo": r.get("memo"),
+        # 说话人分离 / 声纹：列表里用来标「我未参与」
+        "diarized": bool(r.get("diarized_at")),
+        "speakerCount": r.get("speaker_count"),
+        "userPresent": None if r.get("user_present") is None else bool(r.get("user_present")),
+        "userSimilarity": r.get("user_similarity"),
     }
 
 
@@ -284,6 +326,8 @@ def get_recording(recording_id: str, user: dict = Depends(current_user)) -> dict
     return {
         **recording_card(rec),
         "memo": rec.get("memo"),
+        "speakers": _json_list(rec.get("speaker_matches")),
+        "voiceprintReady": bool(rec.get("speaker_embeddings")),
         "audio": audio,
         "chunks": [
             {
@@ -332,15 +376,77 @@ def update_recording(
     return recording_card(rec)
 
 
+def _transcript_index(recording_id: str) -> tuple[list[dict], list[tuple[str, int]]]:
+    """把全文句子的序号映射回 (chunk_id, 分片内序号)。
+
+    顺序必须与 `transcript_for` 完全一致：先按 seq 拼，再对 startMs 做一次稳定排序。
+    """
+    chunks = all_(
+        "SELECT id, seq, segments FROM chunks WHERE recording_id = ? ORDER BY seq ASC",
+        (recording_id,),
+    )
+    flat: list[dict] = []
+    owner: list[tuple[str, int]] = []
+    for c in chunks:
+        for i, s in enumerate(parse_segments(c)):
+            flat.append(s)
+            owner.append((str(c["id"]), i))
+
+    order = sorted(range(len(flat)), key=lambda i: flat[i].get("startMs") or 0)
+    return flat, [owner[i] for i in order]
+
+
+@router.patch("/{recording_id}/transcript")
+def update_transcript(
+    recording_id: str,
+    body: dict[str, Any] = Body(default_factory=dict),
+    user: dict = Depends(current_user),
+) -> dict:
+    """手动修订某句转写文字（前端序号就是全文列表里看到的下标）。"""
+    _get_recording(recording_id, user["id"])
+
+    if "index" not in body or "text" not in body:
+        raise HTTPException(400, "缺少 index 或 text")
+    try:
+        idx = int(body["index"])
+    except (TypeError, ValueError) as e:
+        raise HTTPException(400, "index 必须是整数") from e
+    text = str(body["text"])
+
+    _flat, owners = _transcript_index(recording_id)
+    if idx < 0 or idx >= len(owners):
+        raise HTTPException(400, "句子序号超出范围")
+
+    chunk_id, seg_i = owners[idx]
+    chunk = one("SELECT * FROM chunks WHERE id = ?", (chunk_id,))
+    if not chunk:
+        raise HTTPException(404, "该句所属的分片已不存在")
+
+    segs = parse_segments(chunk)
+    if seg_i >= len(segs):
+        raise HTTPException(400, "句子序号超出范围")
+
+    segs[seg_i]["text"] = text
+    joined = "\n".join(str(s.get("text") or "") for s in segs)
+    execute(
+        """UPDATE chunks SET segments = ?, transcript = ?, status = 'done',
+           updated_at = ? WHERE id = ?""",
+        (json.dumps(segs, ensure_ascii=False), joined, now_iso(), chunk_id),
+    )
+    finalize_recording(recording_id)
+
+    return {"ok": True, "transcript": transcript_for(recording_id)}
+
+
 @router.delete("/{recording_id}")
 def delete_recording(recording_id: str, user: dict = Depends(current_user)) -> dict:
     rec = one(
         "SELECT * FROM recordings WHERE id = ? AND user_id = ?",
         (recording_id, user["id"]),
     )
-    if rec:
-        execute("DELETE FROM recordings WHERE id = ?", (recording_id,))
-        shutil.rmtree(UPLOADS_DIR / recording_id, ignore_errors=True)
+    if not rec:
+        raise HTTPException(404, "录音不存在")
+    discard_recording(recording_id)
     return {"ok": True}
 
 
@@ -427,7 +533,9 @@ async def upload_chunk(
         (recording_id,),
     ) or {"s": 0, "n": 0}
     execute(
-        "UPDATE recordings SET status = 'processing', duration_ms = ? WHERE id = ?",
+        "UPDATE recordings SET status = 'processing', duration_ms = ?, "
+        "diarized_at = NULL, speaker_count = NULL, speaker_embeddings = NULL, "
+        "speaker_matches = NULL, user_present = NULL, user_similarity = NULL WHERE id = ?",
         (int(total["s"] or 0), recording_id),
     )
 
@@ -508,6 +616,8 @@ async def upload_file(
 
     execute(
         """UPDATE recordings SET status = 'processing', duration_ms = ?,
+           diarized_at = NULL, speaker_count = NULL, speaker_embeddings = NULL,
+           speaker_matches = NULL, user_present = NULL, user_similarity = NULL,
            ended_at = COALESCE(ended_at, ?), started_at = COALESCE(started_at, ?) WHERE id = ?""",
         (total_ms, now_iso(), now_iso(), recording_id),
     )
@@ -544,6 +654,53 @@ def finish_recording(
     return recording_card(rec)
 
 
+# ---------------- 相邻录音合并 ----------------
+@router.post("/merge")
+def merge_adjacent_recordings(
+    body: dict[str, Any] = Body(default_factory=dict),
+    user: dict = Depends(current_user),
+) -> dict:
+    """把当前用户前后相隔不到 N 分钟的录音真合并成一条（默认 5 分钟）。
+
+    音频分片本身不合并，只是排到同一条记录下面依次播放；合并后旧纪要作废，
+    由自动纪要重新生成一份（没开自动纪要的话，到详情页手动生成即可）。
+    """
+    from ..services.merge import find_merge_partner, merge_recordings, MERGE_WINDOW_MS
+    from ..services.transcribe import finalize_recording
+
+    try:
+        window = int(body.get("minutes")) * 60 * 1000
+    except (TypeError, ValueError):
+        window = MERGE_WINDOW_MS
+    window = max(1, min(120, int(window / 60000))) * 60000
+
+    merged = 0
+    guard = 0
+    while guard < 500:
+        guard += 1
+        rows = all_(
+            """SELECT id FROM recordings
+               WHERE user_id = ? AND status IN ('ready', 'failed')
+               ORDER BY started_at ASC""",
+            (user["id"],),
+        )
+        done = False
+        for row in rows or []:
+            partner = find_merge_partner(row["id"], window)
+            if not partner:
+                continue
+            keep_id, drop_id = partner
+            merge_recordings(keep_id, drop_id)
+            finalize_recording(keep_id, allow_merge=False)
+            merged += 1
+            done = True
+            break
+        if not done:
+            break
+
+    return {"merged": merged, "minutes": window // 60000}
+
+
 # ---------------- 重试 ----------------
 @router.post("/{recording_id}/retry")
 def retry_recording(recording_id: str, user: dict = Depends(current_user)) -> dict:
@@ -566,6 +723,51 @@ def retry_recording(recording_id: str, user: dict = Depends(current_user)) -> di
     execute("UPDATE recordings SET status = 'processing' WHERE id = ?", (recording_id,))
     drain()
     return {"requeued": len(failed)}
+
+
+# ---------------- 补跑说话人分离 ----------------
+@router.post("/{recording_id}/diarize")
+def diarize_recording(
+    recording_id: str,
+    force: bool = Query(False),
+    user: dict = Depends(current_user),
+) -> dict:
+    """给漏跑/失败的录音补做说话人分离，不用重新转写。
+
+    ``force=true`` 会清掉已有结果重新分离，用于旧版本没有保存声纹质心的录音。
+    """
+    from ..services.diarize import enqueue_diarize
+    from ..services.settings import read_settings
+
+    rec = _get_recording(recording_id, user["id"])
+    if not read_settings(user["id"]).get("speakerDiarization"):
+        raise HTTPException(400, "请先在「设置 → 录音与纪要」开启说话人分离")
+    if rec.get("diarized_at") and not force:
+        return {"ok": True, "queued": False}
+
+    if force:
+        execute(
+            """UPDATE recordings
+               SET diarized_at = NULL, speaker_count = NULL, speaker_embeddings = NULL,
+                   speaker_matches = NULL, user_present = NULL, user_similarity = NULL
+               WHERE id = ?""",
+            (recording_id,),
+        )
+        # 旧结果里的说话人编号和名字一起清掉，等新的分离结果覆盖
+        for c in all_("SELECT * FROM chunks WHERE recording_id = ?", (recording_id,)):
+            segs = parse_segments(c)
+            for s in segs:
+                s.pop("speaker", None)
+                s.pop("speakerName", None)
+                s.pop("speakerIsSelf", None)
+            execute(
+                "UPDATE chunks SET segments = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(segs, ensure_ascii=False), now_iso(), c["id"]),
+            )
+
+    enqueue_diarize(recording_id)
+    drain()
+    return {"ok": True, "queued": True}
 
 
 # ---------------- 手动触发纪要 ----------------

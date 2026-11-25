@@ -14,21 +14,35 @@ idf_component_register(
         "display.c"
         "lcd_panel.c"
         "lcd_ui.c"
+        "epd_panel.c"
+        "epd_ui.c"
+        "dns_redirect.c"
+        "battery.c"
+        "sr_vad.c"
+        "clock.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_driver_i2s
+        esp_adc
         esp_driver_gpio
         esp_driver_i2c
         esp_driver_spi
         esp_driver_ledc
+        esp_driver_usb_serial_jtag
         esp_lcd
         esp_pm
         esp_timer
         nvs_flash
         esp_wifi
         esp_http_client
+        esp-sr
+        mbedtls
         esp_http_server
         app_update
         littlefs
         esp_audio_codec
+        fatfs
+        sdmmc
+        esp_driver_sdspi
+        esp_driver_sdmmc
 )

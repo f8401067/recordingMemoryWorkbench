@@ -1,62 +1,79 @@
 # 忆录 · Recall Workbench
 
-本地部署的录音记忆库。网页直接录音 → 自动切片上传 → 语音识别转文字 → AI 生成纪要与思维导图 → 在「回忆」里按日 / 周 / 年回看每一天。
+**English** | [中文版 / Chinese](README.zh-CN.md)
 
-数据（音频、文字、纪要）全部保存在你自己机器的 `data/` 目录里，AI 服务商可自由更换。
+A self-hosted recording memory workbench. Record directly in the browser → automatically split into chunks and upload → speech-to-text → AI-generated summaries and mind maps → revisit your days in **Memories** by day / week / year.
 
-## 功能
+All data (audio, transcripts, summaries) lives in your own machine's `data/` directory, and AI providers can be swapped at any time.
 
-- **网页录音**：浏览器直接录，每 N 秒自动切一片上传并转写，录音没停文字就开始出
-- **长音频上传**：拖一个 1 小时的录音文件进去，后端用 ffmpeg 自动切片并排队转写
-- **AI 纪要**：自动提炼概要、关键内容、结论、待办，并生成可交互的思维导图
-- **回忆回看**：日 / 周 / 年三种视角，打开就看到已经整理好的回忆；某一段还没有整理时会自动开始总结并显示等待状态
-- **多服务商**：ASR 与 LLM 都可配置多个、随时切换、一键测连通性；语言模型内置国内各家大模型预设，选中即带出地址、可一键拉取真实模型名
-- **本地 ASR 可选**：不联网也能转写——Qwen3-ASR / SenseVoice / Paraformer（sherpa-onnx）、`faster-whisper`、`whisper.cpp`，模型在设置页一键下载
-- **开放 API**：给脚本、录音笔或其他设备一个接口，推音频即可拿文字
-- **硬件免登录配对**：设备开机播报/显示 6 位数字编号（MAC 换算、固定不变），后台输一次就完成绑定并下发专属 token
-- **移动端适配**：手机浏览器打开就是原生 App 的体验，支持加到主屏
+## Features
 
-## 技术栈
+- **Browser recording**: record in the browser; every N seconds a chunk is uploaded and transcribed, so text starts appearing before you stop recording
+- **Long audio upload**: drop in a one-hour recording; the backend splits it with ffmpeg and queues it for transcription
+- **AI summaries**: automatically extracts overview, key points, conclusions and todos, plus an interactive mind map; supports manual editing and **AI revision** — describe a change in a dialog and the AI revises that summary accordingly
+- **Memories**: day / week / year views with already-organized memories; if a period has not been summarized yet, generation starts automatically and a waiting status is shown
+- **Multiple providers**: configure several ASR and LLM providers, switch at any time, and test connectivity with one click; built-in presets for major Chinese LLMs auto-fill endpoints, and real model names can be fetched with one click
+- **Optional local ASR**: transcribe fully offline with Qwen3-ASR / SenseVoice / Paraformer (sherpa-onnx), `faster-whisper`, or `whisper.cpp`; models can be downloaded in one click from the settings page
+- **Local speaker diarization**: after transcription, automatically labels "Speaker 1/2/…" using pyannote segmentation + 3D-Speaker embeddings, pure CPU inference, audio never leaves the machine
+- **Open API**: give scripts, recorders or other devices a simple endpoint — push audio, get text
+- **MCP tools**: connect your own MCP services, use their tools in chat, and push Find summaries out automatically or manually
+- **Outbound MCP service**: expose Recall itself as a token-protected MCP server so AI clients can upload recordings, read AI summaries by date and search memories; the dashboard shows clients and call logs
+- **Passwordless hardware pairing**: a device announces/displays a fixed 6-digit code derived from its MAC; enter it once in the dashboard to bind the device and issue a dedicated token
+- **Mobile-friendly**: the browser UI feels like a native app on phones and supports "Add to Home Screen"
 
-| 层 | 选型 |
+## Tech stack
+
+| Layer | Choice |
 | --- | --- |
-| 后端 | Python 3.11+ + FastAPI + uvicorn（依赖用 [uv](https://github.com/astral-sh/uv) 管理） |
-| 数据库 | 内置 SQLite（默认，开箱即用）/ 外置 PostgreSQL（连接池 + Alembic 迁移），在「设置 → 数据存储」切换 |
-| 任务队列 | 数据库表驱动 + 线程池 worker，支持重试与指数退避 |
-| 音频处理 | ffmpeg / ffprobe（自动切片、转码为 16k 单声道） |
-| 前端 | React 18 + Vite + TailwindCSS |
-| 思维导图 | 自研 SVG 树布局，支持缩放、拖拽、折叠 |
+| Backend | Python 3.11+ with FastAPI and uvicorn (dependencies managed by [uv](https://github.com/astral-sh/uv)) |
+| Database | PostgreSQL only (connection string in `server-py/.env`, connection pool + Alembic migrations) |
+| Job queue | Database-table driven with a thread-pool worker, retries and exponential backoff |
+| Audio processing | ffmpeg / ffprobe (automatic splitting, transcoding to 16 kHz mono) |
+| Frontend | React 18 + Vite + TailwindCSS |
+| Mind map | Custom SVG tree layout with zoom, drag and collapse |
 
-> 早期版本的后端用 Node.js + Fastify 实现，已归档在 `legacy/nodejs-server/`，仅作参考，不再维护。
-> 两个版本的 HTTP 契约、数据库表结构完全一致，`data/` 目录可直接沿用。
+> Earlier versions used a Node.js + Fastify backend, archived in `legacy/nodejs-server/` for reference only and no longer maintained.
+> Both versions share the same HTTP contract and database schema, so the `data/` directory can be reused directly.
 
-## 快速开始
+## Quick start
 
-### 依赖
+### Requirements
 
-- Python ≥ 3.11 与 [uv](https://github.com/astral-sh/uv)（`curl -LsSf https://astral.sh/uv/install.sh | sh`）
-- Node.js ≥ 20（仅构建/开发前端时需要）
-- ffmpeg：`brew install ffmpeg`（macOS）/ `apt install ffmpeg`（Debian 系）
+- Python ≥ 3.11 and [uv](https://github.com/astral-sh/uv) (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
+- Node.js ≥ 20 (only needed to build or develop the frontend)
+- ffmpeg: `brew install ffmpeg` (macOS) / `apt install ffmpeg` (Debian-based Linux)
 
-### 本地开发
+### One-click start (macOS, recommended for daily use)
+
+Double-click **`启动 Recall.command`** in the project root, or run `bash scripts/start.sh`. The script will:
+
+- install dependencies on first run, and rebuild the frontend automatically when its sources are newer than `web/dist`
+- check that PostgreSQL is reachable and try to start a Docker container mapped to that port if it is not
+- start the backend and open <http://localhost:8787> automatically (the backend serves the frontend too — **no** separate Vite process is needed)
+- only open the browser if the service is already running, instead of starting a duplicate
+- **stop the service when you close the terminal window or press Ctrl+C**
+
+Logs go to `data/logs/server.log`.
+
+### Local development
 
 ```bash
 npm run dev
 ```
 
-- 前端热更新：<http://localhost:5173> ← 开发时访问这个
-- 后端接口：<http://localhost:8787>（顺带提供 Swagger 文档 <http://localhost:8787/api/docs>）
+- Frontend with hot reload: <http://localhost:5173> ← use this during development
+- Backend API: <http://localhost:8787> (Swagger docs at <http://localhost:8787/api/docs>)
 
-首次启动会自动创建账号 **admin / admin123**，登录后请到「设置 → 账号」改密码。
+On first start an **admin / admin123** account is created automatically; sign in and change the password under **Settings → Account**.
 
-### 生产模式（单端口）
+### Production mode (single port)
 
 ```bash
-npm run build      # 构建前端到 web/dist
-npm start          # FastAPI 同时托管前端静态文件
+npm run build      # build the frontend into web/dist
+npm start          # FastAPI serves the static frontend files as well
 ```
 
-访问 <http://localhost:8787>。
+Visit <http://localhost:8787>.
 
 ### Docker
 
@@ -64,373 +81,567 @@ npm start          # FastAPI 同时托管前端静态文件
 docker compose up -d --build
 ```
 
-数据持久化在 `./data`，重启容器不丢。镜像内已包含 ffmpeg。
+Data persists in `./data` and survives container restarts. The image already includes ffmpeg.
 
-## 数据库：内置 SQLite 或外置 PostgreSQL
+## Database: PostgreSQL
 
-默认用内置 SQLite（`data/recall.db`），零配置就能跑。**它只适合调试和单人使用**：
-SQLite 同一时刻只有一个写者，多人同时录音/整理时会出现锁等待，也不支持远程访问。
+PostgreSQL is the only supported database. Connection details are **only configured in files** — there is no UI switch; restart the backend after changing them.
 
-正式部署请换成外置 PostgreSQL，在「设置 → 数据存储」里操作：
-
-1. 选「外置 PostgreSQL」，填主机、端口、数据库名、用户名、密码（SSL 模式、schema 可选）
-2. 「测试连接」——只验证服务器可达，库不存在也算通过
-3. 「保存并切换」——自动建库（需要建库权限）、建表、补列，然后立刻切过去，**不需要重启进程**
-4. 新库里没有账号，页面会自动跳到初始化向导，创建第一个管理员后即进入系统
-
-关于数据：
-
-- **切换不会迁移任何数据**。新库里没有账号、录音记录和纪要，需要用新库的账号重新登录；
-  音频文件仍在 `data/uploads/`（文件不在库里）。
-- 想切回 SQLite，把选项改回「内置 SQLite」再保存即可，原 `recall.db` 里的数据还在。
-- 连接信息保存在 `data/config.json`（密码明文存储，注意该文件的权限），格式：
-
-```json
-{
-  "database": {
-    "driver": "postgres",
-    "host": "127.0.0.1",
-    "port": 5432,
-    "database": "recall",
-    "user": "postgres",
-    "password": "******",
-    "sslmode": "prefer",
-    "schema": "public"
-  }
-}
-```
-
-也可以用环境变量 `DATABASE_URL` 指定数据库，优先级高于配置文件（此时界面上只读）：
+For a local installation, edit `server-py/.env`:
 
 ```bash
-DATABASE_URL=postgresql://postgres:secret@127.0.0.1:5432/recall npm start
+DATABASE_URL=postgresql://postgres:secret@127.0.0.1:5432/recall?sslmode=disable
 ```
 
-数据库连不上时服务仍然会启动，`/api/health` 会显示 `connected: false`，登录页和 `/setup`
-会给出错误原因并提供修正入口——不会把你锁在门外。
+For Docker, edit `DATABASE_URL` for the `recall` service in `docker-compose.yml`. By default it points to the compose `postgres` service (the hostname is the service name); to use an existing database on the host, use `host.docker.internal`:
 
-一个最小可用的 PostgreSQL（Docker）：
+```yaml
+DATABASE_URL: postgresql://postgres:secret@host.docker.internal:5432/recall?sslmode=disable
+```
+
+Supported query parameters in the connection string:
+
+| Parameter | Description |
+| --- | --- |
+| `sslmode` | `disable` / `prefer` / `require` / `verify-full`, defaults to `prefer` |
+| `schema` | schema for the tables, defaults to `public`; created automatically if missing |
+| `pool_size` | connection pool limit, defaults to 10 |
+
+Three things happen automatically at startup: create the database if it does not exist (requires database-creation privileges) → run Alembic migrations to create tables / add columns → if the database has no accounts, create the first administrator with `ADMIN_USER` / `ADMIN_PASSWORD` (also configured in files).
+
+If the database cannot be reached, the service still starts; `/api/health` reports `connected: false`, and `/setup` shows the current connection string (without the password) plus which file and line to edit.
+
+A minimal PostgreSQL instance:
 
 ```bash
 docker run -d --name recall-pg \
   -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=recall -p 5432:5432 postgres:16
 ```
 
-想连 compose 里的一起跑，用叠加文件（不用改默认 compose）：
+Compose includes a `postgres` service, started together by `docker compose up -d --build`, with data in `./pg-data/`.
 
-```bash
-docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d --build
-```
+### Schema evolution and connection pool
 
-### 结构演进与连接池
+- Table schemas are versioned with **Alembic** (`server-py/app/migrations/versions/`) and automatically `upgrade head` at startup; upgrading an older database only adds missing columns and indexes and never touches existing data.
+- A **psycopg connection pool** is used (created lazily, up to 10 connections by default); on shutdown the old pool is closed gracefully in a background thread so requests are not blocked.
+- After changing the configuration (`DATABASE_URL`) you **must restart the process** — there is no runtime database switching.
 
-- 表结构用 **Alembic** 版本化管理（`server-py/app/migrations/versions/`），启动时自动
-  `upgrade head`；迁移脚本写的是两库通用的 SQL，SQLite 与 PostgreSQL 共用同一套历史。
-  老库初次升级只会补缺的列和索引，不会动数据。
-- PostgreSQL 侧走 **psycopg 连接池**（懒创建，默认最多 8 条连接），切库时旧池在后台线程里
-  优雅关闭，不阻塞请求。
-- 进程会盯着 `data/config.json` 的 mtime：**别的进程改了配置，本进程 1 秒内自动跟上**，
-  多副本部署不用挨个重启。
-
-新增一张表 / 改字段：
+Add a table / change a field:
 
 ```bash
 cd server-py
-.venv/bin/alembic -c alembic.ini revision -m "add xxx"   # 生成空迁移，然后手写 SQL
+.venv/bin/alembic -c alembic.ini revision -m "add xxx"   # generate an empty migration, then write the SQL
 ```
 
-### 已有数据搬家（SQLite → PostgreSQL）
+> The old `data/recall.db` (SQLite) is no longer supported and will not be read. If you need data from it, export it and import it into PostgreSQL with SQL, or simply delete it.
 
-网页上的切换是**不迁数据**的。要保留旧录音，用自带脚本：
+## Configuring AI providers
 
-```bash
-cd server-py
-# 先看一眼会搬多少行
-.venv/bin/python -m app.tools.migrate_sqlite_to_pg \
-  --url postgresql://postgres:secret@127.0.0.1:5432/recall --dry-run
-# 真搬（目标库非空会拒绝，确认覆盖加 --force）
-.venv/bin/python -m app.tools.migrate_sqlite_to_pg \
-  --url postgresql://postgres:secret@127.0.0.1:5432/recall
-```
+Open **Settings** and configure **Speech Recognition** and **Language Model** separately; creating one default entry for each is enough.
 
-脚本会按外键顺序逐表复制并校验行数；音频文件不在库里，记得把 `data/uploads/` 一起拷过去。
-搬完在「设置 → 数据存储」里切到同一个库即可（账号密码、API Key 都会带过去）。
+### Speech recognition (ASR)
 
-## 配置 AI 服务商
-
-进入「设置」，分别配置**语音识别**和**语言模型**，各建一个默认项即可。
-
-### 语音识别（ASR）
-
-| 类型 | 说明 |
+| Type | Description |
 | --- | --- |
-| 本地 · sherpa-onnx（Qwen3-ASR / SenseVoice） | **中文首选**。纯 ONNX、不需要 PyTorch，Qwen3-ASR 中文最准、SenseVoice 最快，模型设置页一键下载 |
-| 本地 · faster-whisper | 离线、`pip` 装一个包就能跑，CPU/GPU 通用，多语种覆盖最广 |
-| 本地 · whisper.cpp | 离线、单文件二进制，Apple Silicon 走 Metal、N 卡走 CUDA，速度最快 |
-| 阿里百炼 · Paraformer 实时 | 云端方案里延迟最好。WebSocket 流式推送本地音频，不需要公网地址，返回逐句时间戳 |
-| 阿里百炼 · Qwen3-ASR | 同步接口，准确率高，无句级时间戳 |
-| OpenAI 兼容 `/audio/transcriptions` | 可填任意 whisper 协议网关；本机跑的 faster-whisper-server / speaches 可以留空 Key |
-| 演示引擎 | 不调用外部服务，返回模拟文本，用于验证流程 |
+| Local · sherpa-onnx (Qwen3-ASR / SenseVoice) | **Best for Chinese**. Pure ONNX, no PyTorch needed; Qwen3-ASR is the most accurate for Chinese and SenseVoice the fastest; models can be downloaded in one click from the settings page |
+| Local · MLX Qwen3-ASR 1.7B | **Apple Silicon only**. 6-bit quantized weights from `mlx-community` running on Metal; noticeably better Chinese accuracy than the 0.6B model |
+| Local · faster-whisper | Offline, one `pip` package, works on CPU/GPU, widest language coverage |
+| Local · whisper.cpp | Offline single-file binary, Metal on Apple Silicon, CUDA on NVIDIA, fastest |
+| Alibaba Bailian · Paraformer realtime | Lowest latency among cloud options; streams local audio over WebSocket, no public address needed, returns per-sentence timestamps |
+| Alibaba Bailian · Qwen3-ASR | Synchronous API, high accuracy, no sentence-level timestamps |
+| OpenAI-compatible `/audio/transcriptions` | Any whisper-protocol gateway; leave the key empty for a locally running faster-whisper-server / speaches |
+| Demo engine | Calls no external service and returns mock text, useful for validating the flow |
 
-云端配置示例（百炼）：
+Example cloud configuration (Bailian):
 
 ```
 Base URL   https://dashscope.aliyuncs.com
 API Key    sk-xxxxxxxx
-模型        paraformer-realtime-v2
+Model      paraformer-realtime-v2
 ```
 
-### 本地开源语音识别（离线）
+### Local open-source speech recognition (offline)
 
-录音全程不出本机时选这里，三个引擎按机器和语种挑：
+Use these when audio must never leave the machine; pick one of three engines based on hardware and language:
 
 | | sherpa-onnx | faster-whisper | whisper.cpp |
 | --- | --- | --- | --- |
-| 安装 | `uv sync --extra local-asr` | 同左 | `brew install whisper.cpp`（或自行编译） |
-| 推理后端 | ONNX Runtime（CPU） | CTranslate2（CPU int8 / CUDA） | ggml（Metal / CUDA / CPU） |
-| 可跑模型 | Qwen3-ASR / SenseVoice / Paraformer | Whisper 全系 | Whisper 全系 |
-| 适合 | **中文会议，准确率优先** | 多语种、跨平台、容器里最省事 | Mac 上跑 Whisper 最快 |
+| Install | `uv sync --extra local-asr` | same | `brew install whisper.cpp` (or build it yourself) |
+| Inference backend | ONNX Runtime (CPU) | CTranslate2 (CPU int8 / CUDA) | ggml (Metal / CUDA / CPU) |
+| Models | Qwen3-ASR / SenseVoice / Paraformer | all Whisper sizes | all Whisper sizes |
+| Best for | **Chinese meetings, accuracy first** | multilingual, cross-platform, easiest in containers | fastest Whisper on Mac |
 
-中文别再用 Whisper 当默认：AISHELL-1 上 Whisper-large-v3 字错率约 5%，Qwen3-ASR 0.6B 约 1.5%，
-SenseVoice 约 3~4%，而且 Qwen3-ASR 自带标点、能自动识别语种和方言。
+For Chinese, Whisper is no longer the default: on AISHELL-1, Whisper-large-v3 has a character error rate of about 5%, Qwen3-ASR 0.6B about 1.5%, and SenseVoice about 3–4%; Qwen3-ASR also adds punctuation and detects languages and Chinese dialects automatically.
 
-sherpa-onnx 侧的模型（设置页一键下载，纯 ONNX，不需要 PyTorch）：
+sherpa-onnx models (one-click download in settings, pure ONNX, no PyTorch):
 
-| 模型 | 体积 | 特点 |
+| Model | Size | Notes |
 | --- | --- | --- |
-| **Qwen3-ASR 0.6B** | 838MB | 中文最准，52 语种 + 22 种中文方言，自动语种、自带标点；CPU 约 9 倍实时 |
-| SenseVoice Small | 158MB | 234M 非自回归，约 30 倍实时；中英粤日韩，同时输出情感/音频事件标签 |
-| Paraformer 中文 | 218MB | 达摩院中文模型，句级时间戳稳，纯中文会议够用；不含标点 |
+| **Qwen3-ASR 0.6B** | 838 MB | Most accurate for Chinese, 52 languages + 22 Chinese dialects, automatic language detection, built-in punctuation; ~9× realtime on CPU |
+| SenseVoice Small | 158 MB | 234M non-autoregressive, ~30× realtime; Chinese, English, Cantonese, Japanese, Korean, with emotion / audio-event tags |
+| Paraformer Chinese | 218 MB | DAMO Academy Chinese model, stable sentence-level timestamps, sufficient for Chinese-only meetings; no punctuation |
 
-装依赖：
+On Apple Silicon you can also choose **MLX Qwen3-ASR 1.7B (6-bit)** (~1.9 GB):
+
+| Model | Size | Notes |
+| --- | --- | --- |
+| Qwen3-ASR 1.7B · 6-bit | ~1.9 GB | Metal accelerated, Chinese accuracy a step above 0.6B; ~3.5 GB resident memory, roughly 2× slower |
+
+MLX works only on M-series chips; on Intel Macs, Linux and containers it is reported as unavailable. Weights come from `mlx-community/Qwen3-ASR-1.7B-6bit` and the settings page downloads them **from ModelScope by default** (direct access in China with per-file resume); if ModelScope is unavailable it falls back to `hf-mirror.com`, then huggingface.co.
+
+Install dependencies:
 
 ```bash
-# sherpa-onnx + faster-whisper（一条命令，都不需要额外二进制）
+# sherpa-onnx + faster-whisper (one command, no extra binaries needed)
 cd server-py && uv sync --extra local-asr
 
-# whisper.cpp（macOS）
-brew install whisper.cpp        # 提供 whisper-cli
-# 其他平台编译后：export WHISPER_CPP_BIN=/path/to/whisper-cli
+# whisper.cpp (macOS)
+brew install whisper.cpp        # provides whisper-cli
+# on other platforms after building: export WHISPER_CPP_BIN=/path/to/whisper-cli
 
-# Docker 里带上本地引擎（镜像会大一些）
+# include local engines in Docker (larger image)
 INSTALL_LOCAL_ASR=1 docker compose up -d --build
 ```
 
-然后在「设置 → 语音识别服务 → 添加」，选「本地 · sherpa-onnx」「本地 · faster-whisper」或
-「本地 · whisper.cpp」，在模型列表里点「下载」，下完选中保存并设为默认即可。
-测试按钮会先检查依赖和模型，再用 0.6 秒静音跑一次真实推理，通过才算就绪。
+Then open **Settings → Speech Recognition → Add**, choose **Local · sherpa-onnx**, **Local · MLX Qwen3-ASR**, **Local · faster-whisper** or **Local · whisper.cpp**, click **Download** in the model list, select the downloaded model, save and set it as default. The test button first checks dependencies and models, then runs a real inference on 0.6 seconds of silence; it is marked ready only if that succeeds.
 
-Whisper 侧的模型大小与选择建议：
+Whisper model sizes and recommendations:
 
-| 模型 | 体积 | 建议 |
+| Model | Size | Recommendation |
 | --- | --- | --- |
-| tiny | ~75MB | 只适合试跑，中文错字多 |
-| base | ~145MB | 轻量，短句勉强 |
-| **small** | ~480MB | Whisper 里中文勉强可用，CPU 也能实时 |
-| medium | ~1.5GB | 准确率明显更好，CPU 偏慢 |
-| large-v3 | ~3.1GB | Whisper 最准，建议 16GB+ 内存或 GPU |
-| large-v3-turbo | ~1.6GB | 接近 large-v3 的质量、速度快数倍 |
+| tiny | ~75 MB | only for a smoke test, many Chinese errors |
+| base | ~145 MB | lightweight, barely usable for short sentences |
+| **small** | ~480 MB | the smallest Whisper size reasonably usable for Chinese, realtime on CPU |
+| medium | ~1.5 GB | noticeably better accuracy, slow on CPU |
+| large-v3 | ~3.1 GB | most accurate Whisper, 16 GB+ RAM or a GPU recommended |
+| large-v3-turbo | ~1.6 GB | close to large-v3 quality, several times faster |
 
-几个实现细节：
+Implementation details:
 
-- 模型统一放在 `data/models/`（`sherpa-onnx/<模型目录>/`、`whisper-cpp/ggml-*.bin`、
-  `faster-whisper/<size>/`），删目录即可回收空间，设置页也能单个删除。
-- **sherpa-onnx 的模型包从 GitHub Releases 拉**（每个 158MB~838MB）。国内直连慢或断流时设
-  `SHERPA_GH_PROXY=https://gh-proxy.com` 换代理源，默认会在直连失败后自动回退 `gh-proxy.com`。
-- Whisper 模型默认走 `hf-mirror.com`（huggingface.co 在国内基本连不上）。有外网直连时设
-  `HF_DOWNLOAD_SOURCE=hf`；想换成自建镜像设 `HF_ENDPOINT=https://your-mirror`。
-- 长音频按 25 秒切块，切点挑能量最低的静音处（不是硬切），避免把一个词劈成两半；
-  块内再按标点切句，输出句级时间戳。
-- 本地推理默认串行（`LOCAL_ASR_CONCURRENCY=1`），避免多片并发把 CPU 和内存打满；
-  机器够强可以调大，但要留意 `ASR_CONCURRENCY` 也别开太高。Qwen3-ASR 0.6B 常驻约 1GB 内存。
-- 中文会自动带上「请使用简体中文」的引导提示词，否则 Whisper 系模型经常输出繁体。
-- 模型对象在进程内缓存（最多 2 份），换模型才会重新加载，不影响连续录音的转写速度。
-- 本地引擎没有说话人分离；要分人只能靠云端服务或后续接 pyannote 之类。
+- All models live in `data/models/` (`sherpa-onnx/<model dir>/`, `whisper-cpp/ggml-*.bin`, `faster-whisper/<size>/`, `mlx-qwen3-asr/<repo name>/`); deleting a directory reclaims space, and the settings page can delete models individually.
+- **Speaker diarization** uses a separate set of local models in `data/models/speaker-diarization/` (pyannote segmentation ~6 MB + 3D-Speaker embedding ~38 MB). Enable **Settings → Recording & Summary → Speaker diarization**, click **Download**, and newly completed recordings are labeled "Speaker 1/2/…"; pure CPU inference, audio stays on the machine. Recordings transcribed before it was enabled are not processed retroactively.
+- **sherpa-onnx model archives come from GitHub Releases** (158 MB–838 MB each). If direct access from China is slow or drops, set `SHERPA_GH_PROXY=https://gh-proxy.com` to use a proxy; by default it automatically falls back to `gh-proxy.com` when direct download fails.
+- Whisper models use `hf-mirror.com` by default (huggingface.co is generally unreachable from China). With direct internet access, set `HF_DOWNLOAD_SOURCE=hf`; to use your own mirror, set `HF_ENDPOINT=https://your-mirror`.
+- MLX models bypass `huggingface_hub` and download per file straight from **ModelScope** repository APIs, falling back to `hf-mirror.com` / huggingface.co on failure; if `HF_ENDPOINT` is set, your own mirror takes priority.
+- Long audio is split into 25-second chunks at the lowest-energy silence (not hard cuts), so words are not split in half; chunks are further split into sentences at punctuation with sentence-level timestamps.
+- Local inference is serialized by default (`LOCAL_ASR_CONCURRENCY=1`) to avoid saturating CPU and memory with parallel chunks; increase it on a powerful machine, but keep `ASR_CONCURRENCY` moderate too. Qwen3-ASR 0.6B uses about 1 GB of resident memory.
+- For Chinese, a "please use Simplified Chinese" instruction is added automatically, since Whisper-family models often output Traditional Chinese otherwise.
+- Model objects are cached in-process (up to 2); they are reloaded only when the model changes, so continuous recording transcription stays fast.
+- Local engines do not perform diarization themselves; speaker labels come from the independent local model described above, regardless of the ASR provider.
 
-### 语言模型（LLM）
+### Language models (LLM)
 
-内置国内主流服务商，选中即带出 Base URL 与默认模型，不用记地址：
+Major Chinese providers are built in; selecting one fills in the Base URL and default model automatically:
 
-| 分组 | 服务商 | 内置地址 |
+| Group | Provider | Built-in endpoint |
 | --- | --- | --- |
-| 国内 | 阿里百炼 · 通义千问 | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
-| 国内 | DeepSeek | `https://api.deepseek.com` |
-| 国内 | 智谱 · GLM | `https://open.bigmodel.cn/api/paas/v4` |
-| 国内 | 月之暗面 · Kimi | `https://api.moonshot.cn/v1` |
-| 国内 | 硅基流动 | `https://api.siliconflow.cn/v1` |
-| 国内 | 字节 · 火山方舟（豆包） | `https://ark.cn-beijing.volces.com/api/v3` |
-| 国内 | 百度 · 千帆（文心） | `https://qianfan.baidubce.com/v2` |
-| 国内 | 腾讯 · 混元 | `https://api.hunyuan.cloud.tencent.com/v1` |
-| 国内 | 科大讯飞 · 星火 | `https://spark-api-open.xf-yun.com/v1` |
-| 国内 | MiniMax | `https://api.minimaxi.com/v1` |
-| 国内 | 阶跃星辰 | `https://api.stepfun.com/v1` |
-| 海外 | OpenAI / Claude / OpenRouter | 官方地址 |
-| 通用 | 自定义（OpenAI 兼容） | 中转站、vLLM、Ollama、LM Studio 填这里 |
+| China | Alibaba Bailian · Qwen | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| China | DeepSeek | `https://api.deepseek.com` |
+| China | Zhipu · GLM | `https://open.bigmodel.cn/api/paas/v4` |
+| China | Moonshot · Kimi | `https://api.moonshot.cn/v1` |
+| China | SiliconFlow | `https://api.siliconflow.cn/v1` |
+| China | ByteDance · Volcengine Ark (Doubao) | `https://ark.cn-beijing.volces.com/api/v3` |
+| China | Baidu · Qianfan (Ernie) | `https://qianfan.baidubce.com/v2` |
+| China | Tencent · Hunyuan | `https://api.hunyuan.cloud.tencent.com/v1` |
+| China | iFlytek · Spark | `https://spark-api-open.xf-yun.com/v1` |
+| China | MiniMax | `https://api.minimaxi.com/v1` |
+| China | StepFun | `https://api.stepfun.com/v1` |
+| Overseas | OpenAI / Claude / OpenRouter | official endpoints |
+| Generic | Custom (OpenAI-compatible) | for gateways, vLLM, Ollama, LM Studio |
 
-三个按钮把配置成本压到最低：
+Three buttons keep configuration effort minimal:
 
-- **自动获取**：填好 Key 后点一下，直接调服务商的 `/models` 把真实模型名拉成可点的标签，
-  不用去官网抄模型名。拉不到的（火山方舟的接入点 ID、星火、混元等）会提示手填。
-- **测试连接**：不用先保存，表单里填完就能测，会真发一次「只回复两个字」的最小请求。
-- **去获取**：每个服务商旁边直接给控制台的 Key 页面链接。
+- **Fetch models**: after entering a key, call the provider's `/models` endpoint and turn real model names into clickable tags — no copying names from the website needed. Providers that cannot be enumerated (Volcengine Ark endpoint IDs, Spark, Hunyuan, etc.) prompt you to enter the name manually.
+- **Test connection**: no need to save first; the form sends a minimal "reply with two words" request.
+- **Get key**: each provider links directly to its console key page.
 
-> 火山方舟多数情况模型名要填**推理接入点 ID**（`ep-` 开头），不是模型名本身。
-> 星火填的是控制台里的「API 密码」，不是 AppID。
+> For Volcengine Ark, the model name is usually an **inference endpoint ID** starting with `ep-`, not the model name itself.
+> For Spark, enter the console's **API password**, not the AppID.
 
-地址推断规则：只给裸域名（如 `https://api.deepseek.com`）时自动补 `/v1`；
-已经带版本段（`/compatible-mode/v1`、`/api/paas/v4`、`/api/v3`）的原样使用。
-想新增一家，只要往 `server-py/app/providers/llm_vendors.py` 的 `VENDORS` 里加一条。
+Endpoint inference: a bare domain (e.g. `https://api.deepseek.com`) gets `/v1` appended; URLs already containing a version segment (`/compatible-mode/v1`, `/api/paas/v4`, `/api/v3`) are used as-is. To add another provider, append an entry to `VENDORS` in `server-py/app/providers/llm_vendors.py`.
 
-### 整理提示词
+### Summarization prompts
 
-内置五套风格，在「设置 → 录音与纪要 → 纪要风格」里切换，决定纪要的**章节结构**：
+Five built-in styles are available under **Settings → Recording & Summary → Summary style**; they determine the **section structure** of a summary:
 
-| 风格 | 章节 |
+| Style | Sections |
 | --- | --- |
-| 会议纪要 | 会议信息 / 讨论要点 / 结论与决定 / 待办事项 |
-| 课程笔记 | 本节主题 / 核心概念 / 详细知识点 / 案例与例题 / 复习要点 |
-| 访谈记录 | 访谈对象与背景 / 核心观点 / 原话摘录 / 事实与数据 / 可追问的方向 |
-| 灵感碎片 | 想法清单 / 想法从哪来 / 可行性与风险 / 下一步 |
-| 通用 | 核心概要 / 关键内容 / 结论 / 待办事项 |
+| Meeting minutes | Meeting info / Key discussion / Conclusions & decisions / Todos |
+| Course notes | Topic / Core concepts / Detailed notes / Examples & exercises / Review points |
+| Interview record | Interviewee & background / Key views / Notable quotes / Facts & figures / Follow-up directions |
+| Idea snippets | List of ideas / Where they came from / Feasibility & risks / Next steps |
+| General | Core overview / Key content / Conclusions / Todos |
 
-五套共用同一段硬性规则（只用原文信息、不编造、修正同音错字、待办须有原文依据）和同一份 JSON 契约
-（`title / summary / markdown / mindmap / highlights / todos`），所以思维导图与高亮在任何风格下都能正常渲染。
-超过 16000 字的录音会先分段提炼，再汇总，分段提示词同样带上风格。
+All five share the same hard rules (use only information from the transcript, do not invent, fix homophone typos, todos must be grounded in the transcript) and the same JSON contract (`title / summary / markdown / mindmap / highlights / todos / moods`), so mind maps and highlights render in every style. Recordings over 16,000 characters are summarized in chunks first and then merged, with the same style applied to the chunk prompts.
 
-同一位置还能填**自定义整理提示词**（最多 2000 字）。它作为「用户自定义要求」追加，优先于风格描述，
-但硬性规则与 JSON 契约仍会保留——所以即使写「用口语化语气，每条结论标注发言人」也不会把输出变成纯文本。
+There are also five **scope-driven memory styles** that are applied automatically and do not appear in the style switcher above:
 
-- 风格跟着纪要走：`summaries.template` 会记录生成时用的风格，重新生成时沿用，不会莫名其妙变回默认值。
-- 提示词实现在 `server-py/app/services/prompts.py`，想改措辞直接编辑 `STYLES` 里对应风格的 `focus / outline / tips`。
+| Scope | Style | Sections |
+| --- | --- | --- |
+| Single day (daily) | Daily memory | What we talked about today / Ideas that came up / Todos / People & moods |
+| One week (weekly) | Weekly memory | What we worked on this week / Moments worth remembering / Todos / People & moods |
+| One month (monthly) | Monthly memory | What we worked on this month / Important events / Lingering todos / People & moods |
+| One year (yearly) | Yearly memory | The thread of the year / Key phases / What is still unfinished / People & moods |
+| Any range | Period memory | What we worked on in this period / Moments worth remembering / Todos / People & moods |
 
-## 使用流程
+Scope is determined by the date range (`services/prompts.py::period_of`): Monday–Sunday is weekly, the 1st to month-end is monthly, Jan 1 – Dec 31 is yearly, everything else is an arbitrary range. Memory styles explicitly ban meeting language (no "meeting info / agenda / decisions / attendees") and focus on who talked about what, which todos exist and how people felt; `moods` must be traceable to the original tone or wording, otherwise write "not expressed". Early daily summaries were generated in meeting style; regenerate once to switch to memory style.
 
-1. 首页点「开始录音」，或「上传音频」
-2. 录音时每隔 N 秒（默认 30，可在设置里改）自动切片上传并转写
-3. 结束后自动进入详情页，转写完成后按设置自动生成纪要
-4. 在「AI 纪要 / 思维导图 / 全文」三个页签之间切换查看
-5. 「回忆」里按日 / 周 / 年回看：日视图是月历 + 当天全部记录，周/年视图会自动把这段时间的录音合并成一份回忆；没有整理过的时段会在打开时自动开始总结
+### Hierarchical summaries: weeks / months / years no longer rescan transcripts
 
-## 开放 API
+Each memory level reuses lower-level results bottom-up instead of rereading all transcripts for that period:
 
-在「设置 → 开放 API」创建密钥，请求头带 `X-API-Key`。这个密钥是**账号级**的，适合脚本调用；
-没有键盘的单片机请用下一节的「设备编号 → token」方式，每台设备一把钥匙。
+| Level | Input | Typical input size |
+| --- | --- | --- |
+| Single recording / daily | transcript of that recording or day (with timestamps) | that day's transcript |
+| Weekly / monthly / arbitrary range | **daily summary markdown** for each day in the range | 7 / 30 files, ~10k–40k characters |
+| Yearly | **12 monthly summary markdown** files for that year | 12 files, ~10k–20k characters |
 
-### 一步转写（推荐）
+Ranges longer than a year bypass the hierarchy and fall back to reading transcripts. Implementation is in `server-py/app/services/summarize.py`:
+
+- `_collect_children()` inventories children with two queries: `ready` is used directly, `failed` is skipped, windows with no recordings are skipped, the rest are marked `pending`.
+- When children are missing, the parent summary enters `waiting`; a background polling task (payload `checkChildren`) idempotently queues missing daily / monthly summaries. Monthly summaries cascade by day, forming a two-level waterfall "yearly → 12 monthly → daily for each day".
+- Once children settle (or after 60 minutes) `_kick_parent()` puts the parent job back in the normal queue. Polling only queries the database, never calls a model.
+- `_context_from_children()` assembles the input; the prompt states that "these memories are the source material for this summary", forbids day-by-day retelling and asks for merged threads and turning points; `build_system_prompt()` / `build_chunk_prompt()` also switch wording based on input type.
+- Result `stats` includes `childSummaries` (how many children were used) and `childMissing` (how many were skipped).
+
+**Benefits and trade-offs**:
+
+- The first yearly summary still needs to fill in all missing daily / monthly summaries at once; that means many jobs and a wait, but each job has a small input, avoiding the old behavior of stuffing a whole year into one call and hitting length limits or truncation.
+- Regenerating a weekly / monthly / yearly summary afterwards only reads a dozen generated texts, greatly reducing time and tokens. Opening the calendar day view creates the daily summary as a side effect.
+- The hierarchy is lossy: details that lower-level memories did not record are invisible upstream. To keep more detail in the yearly memory, make the daily / monthly custom prompts more specific.
+- **Reorganizing a parent only summarizes children that exist now; it does not cascade a recompute of children.** After editing a daily prompt or regenerating a day's summary, click reorganize in the order "daily → monthly → yearly" for changes to reach the top.
+
+Under **Settings → Prompts** you can add custom requirements **per scope** (up to 2,000 characters each):
+
+| Card in the tab | Field | Scope |
+| --- | --- | --- |
+| Single recording | `summaryPrompt` | summary of one recording (shared by all styles) |
+| Daily | `promptDay` | single-day memory |
+| Weekly | `promptWeek` | Monday–Sunday |
+| Monthly | `promptMonth` | whole month |
+| Yearly | `promptYear` | whole year |
+| Any range | `promptRange` | custom range that is not a full week / month / year |
+
+Your text is treated as "user custom requirements" and takes priority over the style description, but hard rules and the JSON contract remain — so even "use a conversational tone and label every conclusion with its speaker" will not turn output into plain text. Leave empty to use the built-in prompt. Existing memories need a **reorganize** click to pick up new prompts.
+
+- The style travels with the summary: `summaries.template` records the style used at generation time and reuses it on regeneration, so it does not silently revert to the default.
+- Prompts are implemented in `server-py/app/services/prompts.py`; edit `focus / outline / tips` of the corresponding style in `STYLES` to change wording.
+
+### Manual edits and AI revision
+
+Every summary (the **AI Summary** tab on a recording detail page and the summary detail page) supports two kinds of edits:
+
+- **Manual edit**: click **Edit**, change the title and Markdown directly, save with ⌘S. Only this summary's text is touched; no model call is made. Clicking **Regenerate** overwrites manual edits.
+- **AI revision**: click **AI revision**, state a request in one sentence (e.g. "make the title a question", "cut todos down to what can be done today"). The AI revises the summary based on it and the original recording material, leaving unmentioned parts unchanged. The page polls automatically and refreshes when done.
+
+AI revision shares the background job queue with initial generation: `POST /api/summaries/{id}/revise` enqueues a `revise_summary` job; the revision prompt is `build_revise_system_prompt` in `server-py/app/services/prompts.py`, and handling is `handle_revise_job` in `services/summarize.py` (single recordings read the transcript, day/week/month/year memories read child summaries, long material is chunked). You cannot request a revision while the summary is still generating, to avoid concurrent overwrites.
+
+## Settings page
+
+Settings are split into tabs (the URL carries `?tab=`, so a tab can be bookmarked):
+
+| Tab | Contents |
+| --- | --- |
+| AI services | Speech recognition / LLM providers, defaults, connectivity tests |
+| MCP tools | Connect external MCP services (HTTP / SSE), list tools, debug calls, summary push, one-click send for AI summaries, manually allow / disallow tools for sending summaries |
+| Recording & summary | chunk duration, automatic summaries, summary style, recognition language, UI theme |
+| Prompts | extra requirements for single recordings, daily / weekly / monthly / yearly summaries and arbitrary ranges |
+| Jobs | running / queued / recently finished background jobs, with duration, heartbeat and retry |
+| Logs | live backend logs (print, tracebacks, job events, uvicorn) with level filter, search, copy, download and clear |
+| Data & devices | Open API keys, outbound MCP service (token / tools / call logs), hardware device binding and session parameters |
+| Account | change password, sign out |
+
+A small badge at the top of settings always shows "N jobs running / N jobs queued"; click it to jump to the Jobs tab.
+
+Job and log APIs are in `server-py/app/routes/system.py`:
+
+- `GET /api/system/tasks`: running / queued / recently finished; payloads are translated into human-readable text (which recording, which chunk, which period)
+- `POST /api/system/tasks/{id}/retry`: requeue a failed job
+- `GET /api/system/logs?level=&q=&after=`: incremental log fetch (`after` is the previous entry's id)
+- `DELETE /api/system/logs`: clear the in-memory buffer
+
+Logs live only in memory (most recent 4,000 entries, cleared on process restart) and are never written to files, avoiding unbounded growth and persisting user content; use **Download** in the page for long-term retention. See `server-py/app/logbuf.py`: it hooks `sys.stdout/stderr` line by line, while structured events such as job start/finish/failure/requeue and model / character counts are written directly via `logbuf.log()`.
+
+## MCP tools
+
+Each user can connect their own [MCP](https://modelcontextprotocol.io) services; their tools are available in the **Find** conversation and can push the final summary text externally (notes, todo apps, chat bots, etc.).
+
+**Only remote HTTP / SSE is supported** — local commands are never executed: configuration comes from a web form and must not be able to start processes on the server.
+
+### Adding a service
+
+Two ways, both under **Settings → MCP tools**:
+
+1. **Manual entry**: name, URL (`https://example.com/mcp`), transport (auto / Streamable HTTP / SSE), headers JSON
+2. **Paste JSON**, compatible with Claude Desktop / Cursor format:
+
+```json
+{
+  "mcpServers": {
+    "My Notes": {
+      "url": "https://example.com/mcp",
+      "headers": { "Authorization": "Bearer sk-..." }
+    }
+  }
+}
+```
+
+`command`-style local services are skipped with an explanation. Saving connects once immediately and persists the tool list, so the list shows each tool's name, description and parameters. Saved headers are masked afterward; leaving them untouched during edits keeps the original values.
+
+**Tools that can receive an AI summary are detected automatically on add / refresh**: the `inputSchema` is checked for a text parameter and whether the tool is a write operation (pure query tools are excluded), and the body / title / date fields are inferred. The decision is cached in `mcp_tools.capability`, shown in settings with a "can send summaries" badge and the body field name.
+
+**Suggested arguments are also generated automatically on add / refresh**: the LLM sees only tool names, descriptions and schemas (not summary content or call history) and produces a valid argument set per tool, stored in `mcp_tools.suggested_args`. The debug panel pre-fills these suggestions; if generation fails it falls back to "required-field defaults" by type. Suggestions are only defaults; after a human edit:
+
+- **Debug panel**: click **Save as template** to write back to the database (`PATCH /api/mcp/servers/{id}/tools/{tool}/args`, keys filtered by a schema whitelist and coerced to the expected types); **AI generate** asks the model for a fresh set on the spot (`POST .../suggest-args`, automatically falling back to a backup model with a notice when the default engine does not respond); **Reset to template** returns to the skeleton values.
+- **One-click send**: clicking a tool first opens a "confirm before sending" dialog showing the merged "suggested arguments + summary content" (`POST /api/mcp/run-tool-preview`, no actual call), with the body placed in the detected body field; the user can edit it or click **AI regenerate**, then confirm to send (`POST /api/mcp/run-tool` with `args`). Merge priority: **user edits > suggested arguments > semantic summary fill** (title / date fields are not stuffed with the body).
+- Refreshing a service does not overwrite human-saved suggestions (`_save_tools` snapshots old values by tool name and restores them).
+
+**Automatic decisions can be overridden manually**: expand the tool list and click "can send summaries / set as sendable" next to any tool to toggle it — designate one yourself if you disagree, or disable one that was auto-detected. Once enabled, a dropdown selects which parameter receives the summary body (only string parameters are listed), a "manual allow / manual exclude" badge is shown, and **Restore automatic** returns to the default rule.
+
+- Manual decisions are stored as `capability.manual: true` and survive service refreshes (`_save_tools` rebuilds the whole tool table) and decision-rule upgrades; only **Restore automatic** clears them.
+- If the server-side tool schema changes and a manually selected field no longer exists, refresh automatically falls back to the current inference so buttons never fail.
+- API: `PATCH /api/mcp/servers/{id}/tools/{tool}/capability` with body `{"sendSummary": true/false, "bodyField"?: "...", "titleField"?: "...", "dateField"?: "..."}`, or `{"reset": true}` to restore automatic behavior. Returns the updated full server object.
+- This changes the "sendable summary" tool list itself; "summary push" below, where the LLM picks tools by description, is a separate path and is unaffected.
+
+### Using tools in chat
+
+- For services with **Available in chat** enabled, tools are written into the Find prompt as `mcp__<service>__<tool>` so the model can save results externally; at most 2 calls, so retrieval rounds are not crowded out.
+- The bottom of the Find page shows only **the tools the LLM selected for this Q&A** (4 built-in retrieval tools + recommended MCP tools): after each answer the question, answer and all tool names / descriptions / parameters are passed to the model, which decides which are genuinely useful, have auto-fillable parameters and are not irrelevant or destructive, up to 6; if none fit, nothing is listed. Model output is validated against a numeric whitelist, and another enabled model is tried automatically if the engine does not respond; on failure it prefers recommending nothing over showing every tool. Click "all N" to expand the full list.
+
+### Summary push (decided by the LLM)
+
+Each service has only "no push / send manually / send automatically" — **no tool names or argument templates to fill in**:
+
+| Mode | Behavior |
+| --- | --- |
+| Automatic | after each Find answer that actually retrieved recordings, ask the model to make one decision |
+| Manual | a "Send summary to XX" button appears under the answer; clicking it asks the model in the same way |
+
+The scheduler passes the question, summary, matched recordings and all tool names / descriptions / parameter schemas to the LLM, which decides whether to send, which service, which tool and what each argument should be. Output is validated against a whitelist (service and tool must come from the list), coerced to the right types and filled where required; pure query tools are filtered out; when the model is unavailable or returns invalid output, it falls back to "pick a tool that accepts text and auto-fill it".
+
+You can write a **natural-language preference** (e.g. "only save content with todos or conclusions, tag it recall") and the model uses it as a rule. The debug panel still lets you construct arguments and call individual tools manually.
+
+### One-click send for AI summaries
+
+Under every AI summary (recording detail page, summary detail page, inline previews on the Memories page) the tools in the "can send summaries" list are shown (auto-detected and manually designated, excluding manually excluded ones),
+**one button per tool**: click one and it sends with that tool directly, with no model guessing and no arguments to fill in.
+Clicking first opens a "confirm before sending" dialog showing the merged parameters of the LLM-generated **suggested arguments** and the summary body; the user can edit them (edited keys win over suggestions) and must confirm before the call.
+The server reads the body from the database by `summaryId`, fills the whole Markdown into the detected body field according to the schema, fills title / date fields semantically, and shows the result and duration under the button; call logs mark it as "summary".
+With no MCP configured, only a lightweight settings entry is shown so the layout stays clean. This button is a manual action and is independent of the automatic / manual switches of "summary push" above.
+
+### APIs
+
+- `GET/POST /api/mcp/servers`, `PATCH/DELETE /api/mcp/servers/{id}`
+- `POST /api/mcp/servers/import`: JSON import
+- `POST /api/mcp/servers/{id}/refresh`: reconnect and refresh the tool list (returns protocol version, handshake duration, error reason)
+- `GET /api/mcp/servers/{id}/tools`, `POST /api/mcp/servers/{id}/tools/{tool}/call`: debug call
+- `PATCH /api/mcp/servers/{id}/tools/{tool}/capability`: manually allow / disallow sending summaries, or `{"reset": true}` to restore automatic
+- `POST /api/mcp/servers/{id}/tools/{tool}/suggest-args`: ask the LLM for suggested arguments based on the schema
+- `GET/PATCH /api/mcp/servers/{id}/tools/{tool}/args`: read / save suggested arguments (human-edited templates, preserved on refresh)
+- `POST /api/mcp/run-tool-preview`: `{summaryId, serverId, tool}` returns merged argument preview without calling
+- `POST /api/mcp/run-tool`: `{summaryId, serverId, tool, args?}` one-click send, user-edited keys in `args` win
+- `GET /api/mcp/tools`: tools available in chat by default; `?scope=summary` returns tools detected as able to receive AI summaries
+- `POST /api/mcp/run-tool`: `{summaryId, serverId, tool}` sends a summary to a tool in one click
+- `POST /api/find/push`: manually push a summary (the model also picks the tool)
+- `GET /api/mcp/logs?serverId=&limit=`: recent call logs (debug / chat / push / summary, most recent 60 kept)
+
+Implementation: `server-py/app/services/mcp_client.py` (transport layer, synchronous wrapper around the official SDK),
+`server-py/app/services/mcp_servers.py` (configuration, tool cache and capability detection),
+`server-py/app/services/mcp_dispatch.py` (LLM tool decisions, argument validation, one-click summary calls),
+`server-py/app/services/mcp_arg_suggest.py` (schema-based suggestions, human template I/O, pre-generation),
+`server-py/app/services/mcp_recommend.py` (tool recommendation on the Find page),
+`server-py/app/routes/mcp.py`, `web/src/components/SummaryMcpActions.tsx` (tool buttons under summaries),
+`web/src/pages/settings/McpTab.tsx` (debug panel argument pre-fill / AI generation / save as template).
+
+## Usage flow
+
+1. On the home page, click **Start recording** or **Upload audio**
+2. While recording, every N seconds (30 by default, configurable in settings) a chunk is uploaded and transcribed
+3. When recording ends you land on the detail page; once transcription completes, a summary is generated automatically according to settings
+4. Switch between the **AI Summary / Mind map / Transcript** tabs
+5. In **Memories**, revisit by day / week / month / year: the day view is a calendar plus all records of that day; week / month / year views aggregate lower-level memories hierarchically (see "Hierarchical summaries"), missing daily / monthly summaries are filled in automatically; the year view still starts only when you click a button, to avoid triggering a large number of jobs by accident; opening an unsummarized period starts summarizing automatically
+
+### Find retrieval and speedups
+
+**Find** does not let the LLM scan recordings directly: the model only decides "which tool to call" and "how to answer from evidence"; retrieval happens server-side through four paths — exact literal match (`LIKE`), approximate semantic match (TF-IDF sparse-vector cosine), list recordings by date, and read a single recording for verification.
+
+Most latency comes from serial LLM calls (each decision or answer is a network round trip), so:
+
+- once the model picks a retrieval path, the server runs complementary literal / semantic / date searches in the **same round** and proceeds with the evidence instead of wasting another decision round (`MAX_ROUNDS=2`); common paths drop from 3–4 LLM calls to 2
+- the push decision for "summary push" and "tool recommendation" are independent and now run in parallel
+- the TF-IDF index is cached by data signature in `data/finder_index/` (reused after process restart, safe to delete)
+- migration `0015_search_trgm` adds `pg_trgm` GIN indexes on `recordings.title/memo`, `chunks.transcript`, and `summaries.title/markdown` so `LIKE '%word%'` no longer scans the whole table (1–2 character queries are still limited by trigrams and will scan — a PostgreSQL limitation)
+
+> "Semantic" here means TF-IDF with word weighting, not neural embeddings. Improving recall of synonyms / paraphrases requires embedding + pgvector hybrid search — that is "searching more accurately", not "searching faster".
+
+## Open API
+
+Create a key under **Settings → Open API** and send it in the `X-API-Key` header. This key is **account-level** and suited to scripts; for microcontrollers without a keyboard, use the "device code → token" flow in the next section, with one key per device.
+
+### One-step transcription (recommended)
 
 ```bash
-curl -X POST "http://localhost:8787/api/open/transcribe?wait=1&title=会议录音" \
+curl -X POST "http://localhost:8787/api/open/transcribe?wait=1&title=Meeting%20recording" \
   -H "X-API-Key: rk_xxx" \
   -H "Content-Type: audio/mpeg" \
   --data-binary @audio.mp3
 ```
 
-| 参数 | 说明 |
+| Parameter | Description |
 | --- | --- |
-| `wait=1` | 同步等待转写完成（最长 120s，可用 `timeout` 调整）；不加则立即返回 id |
-| `title` | 记录标题 |
+| `wait=1` | synchronously wait for transcription to finish (up to 120 s, adjustable with `timeout`); without it an id is returned immediately |
+| `title` | recording title |
 | `language` | `zh` / `en` / `auto` |
 
-响应：
+Response:
 
 ```json
 {
   "id": "rec_xxx",
   "status": "ready",
-  "text": "完整转写文本",
-  "segments": [{ "startMs": 0, "endMs": 3200, "text": "第一句…" }],
+  "text": "full transcript",
+  "segments": [{ "startMs": 0, "endMs": 3200, "text": "First sentence…" }],
   "summaryStatus": "queued"
 }
 ```
 
-也支持 `multipart/form-data` 上传（字段名 `file`）。
+`multipart/form-data` uploads are also supported (field name `file`).
 
-### 分片推送（适合设备端边录边传）
+### Chunked push (for devices streaming while recording)
 
 ```bash
-# 1. 创建会话
+# 1. Create a session
 curl -X POST http://localhost:8787/api/open/recordings \
   -H "X-API-Key: rk_xxx" -H "Content-Type: application/json" \
-  -d '{"title":"录音笔 A"}'
+  -d '{"title":"Recorder A"}'
 # → {"id":"rec_xxx"}
 
-# 2. 推送分片（可重复，seq 递增）
+# 2. Push chunks (repeatable, seq increases)
 curl -X POST "http://localhost:8787/api/open/recordings/rec_xxx/chunks?seq=0&durationMs=30000" \
   -H "X-API-Key: rk_xxx" -H "Content-Type: audio/webm" \
   --data-binary @chunk0.webm
 
-# 3. 结束并触发后续处理
+# 3. Finish and trigger downstream processing
 curl -X POST http://localhost:8787/api/open/recordings/rec_xxx/finish \
   -H "X-API-Key: rk_xxx"
 
-# 4. 查询状态与全文
+# 4. Query status and full text
 curl http://localhost:8787/api/open/recordings/rec_xxx -H "X-API-Key: rk_xxx"
 ```
 
-## 硬件设备接入（ESP32-C3 / 录音笔）
+## Outbound MCP service
 
-> 现成固件在 [`esp32/`](esp32/README.md)：长按录音、VAD 跳过静音、Opus 12kbps、先存本地 Flash、
-> 再按需上传，支持有屏（SSD1306 / ST7735）和无屏（LED + 蜂鸣器）两种形态，S3 / C3 都能编。
-> 联网既能在 menuconfig 里写死，也能现场配网（设备开 `Recall-XXXXXX` 热点，手机开 `192.168.4.1` 填 WiFi）。
-> 下面这一节是协议说明和最小示例，想自己接别的主控看这里就够。
+Under **Settings → Data & devices → MCP service**, an account-level token (prefixed `mcps_`) is **generated automatically** the first time you open it; clicking **Reset** invalidates the old value immediately. The endpoint is `http://<host>:8787/mcp` (Streamable HTTP); older clients use `/sse`. Authentication accepts `Authorization: Bearer <token>`, `X-MCP-Token`, `X-API-Key`, or `?token=`.
 
-单片机没有键盘，输不了账号密码，所以绑定不靠登录，只靠**设备开机时的一串 6 位数字编号**：
+Client configuration (works for Claude Desktop / Cursor / WorkBuddy):
+
+```json
+{
+  "mcpServers": {
+    "Recall": {
+      "url": "http://localhost:8787/mcp",
+      "headers": { "Authorization": "Bearer mcps_xxx" }
+    }
+  }
+}
+```
+
+### Tools provided
+
+| Tool | Purpose |
+| --- | --- |
+| `upload_recording` | upload a recording (`audioBase64` + `mimeType`), same effect as device / Open API upload: create record → transcribe → auto-generate AI summary; `wait=true` returns the full text synchronously |
+| `get_daily_summary` | output the AI summary for a date (`YYYY-MM-DD`): full daily memory + each recording's summary for that day + todos / highlights; `generateIfMissing=true` generates it on the spot |
+| `list_recordings` | list recordings by date range (title, time, duration, status) |
+| `get_recording` | read a single recording's full transcript, timestamps and AI summary |
+| `search_memory` | keyword search in titles, notes, full transcripts and summaries |
+| `list_summaries` | list existing summaries / memories, filterable by scope and date |
+| `get_action_items` | formal todos + AI candidate todos |
+| `generate_summary` | trigger / regenerate a memory for a day or range; weekly / monthly / yearly first fill in missing daily / monthly summaries |
+| `get_service_status` | overview of recording count, summary count, queue, etc. |
+
+Every query is isolated to the account matching the token, so clients cannot see other users' data. Uploaded audio is capped at 32 MB after base64 decoding; logs replace base64 with a byte-count description, and raw audio is never written into the database.
+
+### Call logs
+
+The `initialize` handshake records `clientInfo` (name / version / protocol version); later requests are grouped into the same client by `Mcp-Session-Id`. Settings shows connected clients (IP, first / last active, call count), the most recent 60 calls (time, client, method, tool, success / failure, duration), and cumulative calls / tool calls / client count. Only the most recent 300 records are kept and can be cleared with one click. Token resets, disabling and authentication failures are also recorded.
+
+### APIs
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/mcp` | MCP Streamable HTTP (JSON-RPC 2.0); also accepts single-event `text/event-stream` responses |
+| `GET` | `/sse` | handshake stream for the legacy HTTP/SSE transport |
+| `POST` | `/messages?sessionId=` | message endpoint for the legacy SSE transport |
+| `DELETE` | `/mcp` | end a session |
+| `GET` | `/api/mcp-service` | dashboard (JWT): endpoint, token, tool list, stats |
+| `POST` | `/api/mcp-service/reset-token` | dashboard (JWT): reset the token |
+| `PATCH` | `/api/mcp-service` | dashboard (JWT): `{enabled}` enable / disable |
+| `GET` / `DELETE` | `/api/mcp-service/logs` | dashboard (JWT): clients and call logs / clear |
+
+Implementation: `server-py/app/routes/mcp_service.py` (protocol and endpoints), `services/mcp_service.py` (token, sessions, logs),
+`services/mcp_tools.py` (tool definitions and implementations), `web/src/pages/settings/McpServiceCard.tsx` (settings card).
+The protocol is hand-written for MCP 2025-06-18 without the SDK's server part, so SDK upgrades cannot break the built-in service.
+
+## Hardware device pairing (ESP32-C3 / voice recorder)
+
+> Ready-made firmware lives in [`esp32/`](esp32/README.md) (Chinese documentation): press-and-hold recording, VAD silence skipping, Opus 12 kbps, local storage first (TF card if inserted), and **upload only when storage is nearly full or the button is double-clicked**, with screen (SSD1306 / ST7735 / e-paper) and screenless (LED + buzzer) variants; builds for both S3 and C3.
+> Networking can be hardcoded in menuconfig or configured on site (device opens a `Recall-XXXXXX` hotspot; open `192.168.4.1` on a phone to enter WiFi credentials).
+> This section documents the protocol and a minimal example — enough to integrate another MCU.
+
+A microcontroller has no keyboard to type a username and password, so binding uses only a **fixed 6-digit code announced/displayed at boot**:
 
 ```
-① 开机播报 / 显示编号（MAC 换算，永远不变）  例：903471
-        ↓  后台「设置 → 硬件设备 → 添加设备」，输入这串数字
-② 服务端给这台设备生成专属 token
-        ↓  设备轮询 /api/open/pair，几秒内自动取回，存进 NVS
-③ 之后每段音频只带 X-Device-Token 推流，服务端自己归并成一次会话
+① boot: announce / display code (derived from MAC, never changes)   e.g. 903471
+        ↓  dashboard: Settings → Hardware devices → Add device, enter the code
+② server issues a dedicated token for this device
+        ↓  device polls /api/open/pair and picks it up within seconds, stores it in NVS
+③ afterwards each audio chunk carries only X-Device-Token; the server merges chunks into a session
 ```
 
-绑定完成后设备不需要知道任何账号信息；换服务器、换账号只要重新绑定，或后台点一下「换发 token」。
+Once bound, the device knows nothing about any account; moving to another server or account only requires rebinding, or clicking "Reissue token" in the dashboard.
 
-### ① 设备侧：MAC → 6 位编号
+### ① Device side: MAC → 6-digit code
 
-**纯数字**是刻意的选择：没有屏幕的录音笔可以直接语音播报「九 零 三 四 七 一」，
-人一听就能输，不用分辨字母和大小写。
+**Digits only** is deliberate: a screenless recorder can speak "nine zero three four seven one" and a human can type it immediately, without distinguishing letters or case.
 
 ```cpp
-uint64_t mac = ESP.getEfuseMac();              // ESP32-C3 出厂 MAC
+uint64_t mac = ESP.getEfuseMac();              // ESP32-C3 factory MAC
 uint32_t x   = (uint32_t)(mac & 0xFFFFFFFFULL);
-uint32_t code = (x * 2654435761u) % 1000000u;  // 打散后取 6 位，避免相邻 MAC 编号相连
+uint32_t code = (x * 2654435761u) % 1000000u;  // scramble then take 6 digits, so adjacent MACs are not adjacent codes
 char buf[7];
-snprintf(buf, sizeof(buf), "%06u", code);      // 例：903471
+snprintf(buf, sizeof(buf), "%06u", code);      // e.g. 903471
 ```
 
-- 编号只含 `0-9`，口述、按键、TTS 播报都不容易错；后台也做了归一化：
-  `903-471`、`903 471`、`九零三四七一`、把 `0` 打成 `O`、`1` 打成 `I/L` 都能认出同一个设备。
-- 同一块板子编号永远一样，刷固件、换服务器都不用改。
-- 6 位数字共 100 万种组合。绑定是「设备正在播报编号 + 后台正在输入编号」的同一时间窗内的即时动作，
-  家用/小批量基本碰不到撞号；万一两台设备真的算出同一个数字，先绑定的那台生效，
-  删掉旧设备再给新设备绑一次即可。
+- Codes contain only `0-9`, so dictation, keypad entry and TTS are error-resistant; the dashboard also normalizes input: `903-471`, `903 471`, "九零三四七一", `0` typed as `O`, `1` typed as `I/L` all resolve to the same device.
+- The same board always has the same code; reflashing or changing servers does not change it.
+- Six digits give 1,000,000 combinations. Binding is an immediate action within a window where the device is announcing the code and someone is typing it in the dashboard, so collisions are practically unheard of in home / small-batch use; if two devices really compute the same number, the first bound wins — delete the old device and bind the new one again.
 
-### ② 后台：输入编号完成绑定
+### ② Dashboard: enter the code to bind
 
-「设置 → 硬件设备 → 添加设备」，把听到/看到的 6 位数字敲进去（名称可留空，会沿用设备自报的名字），确定即可。
+Open **Settings → Hardware devices → Add device**, type the 6 digits you heard or saw (name can be left blank to use the device's self-reported name) and confirm.
 
-- 设备已经开机在轮询时，区块顶部会出现蓝条「N 台设备正在等待配对」，直接点「绑定」更快。
-- 也可以**先绑后上电**（批量备货场景）：设备上线后第一次轮询就能取到 token。
-- 编号已被别的账号绑过会返回 409「该设备已绑定到其他账号」，需要原账号先删掉那台设备。
-- 设备行里能看到编号（`903-471`）、token 掩码、是否正在录音，以及「间隔 / 静默」两个阈值，按设备单独调。
+- While a device is already powered on and polling, a blue bar appears at the top of the section: "N devices waiting to pair"; clicking **Bind** there is faster.
+- You can also **bind before powering on** (for stocked units in bulk): the device picks up the token on its first poll after going online.
+- A code already bound to another account returns 409 "This device is bound to another account"; the original account must delete it first.
+- Each device row shows the code (`903-471`), masked token, whether it is recording, and the per-device `gap` / `idle` thresholds.
 
-### ③ 设备侧：取回 token 并推流
+### ③ Device side: retrieve the token and stream
 
-未绑定时设备每 3 秒轮询一次；后台一点「绑定」，下一次轮询就拿到 token：
+Before binding, the device polls every 3 seconds; once you click **Bind**, the next poll returns the token:
 
 ```bash
 curl "http://192.168.1.10:8787/api/open/pair?code=903471&name=c3-01&firmware=1.0.3"
 
-# 后台还没绑定
+# not bound in the dashboard yet
 { "status": "pending", "code": "903471", "pollAfterMs": 3000 }
 
-# 已绑定：轮询返回 token（设备存一次即可；换发 token 后重新轮询就能拿到新的）
+# bound: polling returns the token (store it once; after a reissue, poll again to get the new one)
 { "status": "bound", "token": "dv_xxx", "deviceId": "dev_xxx",
-  "name": "客厅录音盒", "gapSec": 90, "idleSec": 180 }
+  "name": "Living-room recorder", "gapSec": 90, "idleSec": 180 }
 ```
 
-拿到 token 存进 NVS，之后推音频只带它，不再需要账号级密钥：
+Store the token in NVS and send only that token with future audio; no account key is needed:
 
 ```bash
 curl -X POST "http://192.168.1.10:8787/api/open/ingest?durationMs=10000" \
@@ -444,82 +655,81 @@ curl -X POST "http://192.168.1.10:8787/api/open/ingest?durationMs=10000" \
   "newSession": false, "sessionChunks": 4, "sessionDurationMs": 41000 }
 ```
 
-token 无效（被换发过、设备被删过）会返回 401「设备 token 无效，请重新配对」——固件里收到 401
-就清掉 NVS 里的 token、回到轮询状态，下一次后台绑定后自动恢复。
+An invalid token (reissued, device deleted) returns 401 "Invalid device token, please pair again" — on 401 the firmware clears the NVS token and returns to polling, recovering automatically after the next bind.
 
-### 归并规则
+### Session merging rules
 
-服务端用**到达时间**判断会话边界（设备时钟不准也没关系）：
-
-```
-23:00:00  段1 ─┐
-23:00:10  段2  ├─ 间隔 10s  < 阈值 → 同一次会话（一条记录，一份纪要）
-23:00:20  段3 ─┘
-                    ← 静默 5 分钟，超过「间隔」阈值
-23:05:20  段4 ─── 新会话 → 新建一条记录
-                    ← 之后再没有任何音频，静默超过「空闲」阈值
-              ✅ 自动收尾：转写完成 → 生成这一整段聊天的纪要
-```
-
-| 参数 | 默认 | 说明 |
-| --- | --- | --- |
-| `device` | `default` | 设备名，同一账号下唯一。**用 token 鉴权时可省略**，以 token 对应的那台设备为准 |
-| `gapSec` | 90 | 相邻两段间隔超过多少秒就断开成新记录 |
-| `idleSec` | 180 | 静默多少秒后自动收尾（触发纪要生成） |
-| `durationMs` | 自动探测 | 本段音频时长；不传则服务端用 ffprobe 探测 |
-| `title` | 自动 | 新会话的标题 |
-| `recordedAt` | 服务端时间 | 设备端录制时间（ISO），时钟准的话可以带上 |
-
-`gapSec` / `idleSec` 可以在后台每台设备单独设置，请求里带同名参数可临时覆盖。
-
-### 接口
-
-**配对（不需要任何密钥，靠设备编号本身）**
-
-| 方法 | 路径 | 用途 |
-| --- | --- | --- |
-| `GET`/`POST` | `/api/open/pair?code=903471` | 设备轮询：`pending` 表示还没绑，`bound` 时下发 token；限每 IP 60 次/分钟 |
-| `GET` | `/api/devices/claims` | 后台用（JWT）：列出正在轮询、还没被认领的编号 |
-| `POST` | `/api/devices/bind` | 后台用（JWT）：`{code, name?}` 完成绑定并生成 token |
-| `POST` | `/api/devices/{id}/reset-token` | 后台用（JWT）：换发 token，旧 token 立刻失效 |
-
-**推流（设备 token 或账号级 API Key 二选一）**
-
-| 方法 | 路径 | 用途 |
-| --- | --- | --- |
-| `POST` | `/api/open/ingest` | 推一段音频，返回当前是第几片、是否新会话 |
-| `GET` | `/api/open/ingest` | 设备探活 + 查询当前会话状态（启动自检用） |
-| `POST` | `/api/open/ingest/close` | 设备休眠/关机前主动收尾，不用等超时 |
-
-鉴权写法：
+The server **prefers device recording time** to determine session boundaries and falls back to server arrival time only when `recordedAt` is missing:
 
 ```
-X-Device-Token: dv_xxx          ← 绑定后的设备（推荐）
+23:00:00  chunk 1 ─┐
+23:00:10  chunk 2  ├─ gap 10s < threshold → same session (one record, one summary)
+23:00:20  chunk 3 ─┘
+                     ← 5 minutes of silence, over the "gap" threshold
+23:05:20  chunk 4 ─── new session → new record
+                     ← no more audio, silence over the "idle" threshold
+               ✅ auto close: transcription finishes → summary for the whole conversation
+```
+
+> **Why recording time is required**: an offline device can accumulate a whole day of audio and push dozens of chunks within seconds after getting WiFi back. Using only arrival time, every gap looks like 1–2 seconds and the whole day becomes one record, breaking the timeline and summary. With `recordedAt`, the server computes the real gap as "this chunk's recording start − previous chunk's recording end". Old firmware without it keeps the previous behavior.
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `device` | `default` | device name, unique per account. **Can be omitted with token auth**, the token's device is used |
+| `gapSec` | 90 | gap in seconds between chunks before starting a new record |
+| `idleSec` | 180 | seconds of silence before auto-closing (triggers summary generation) |
+| `durationMs` | auto-detect | duration of this chunk; if omitted the server probes with ffprobe |
+| `title` | automatic | title of a new session |
+| `recordedAt` | server time | **recording start** time of this chunk (ISO8601 UTC); strongly recommended for backfills, otherwise sessions merge into one |
+
+`gapSec` / `idleSec` can be set per device in the dashboard and temporarily overridden by the same-named query parameters in a request.
+
+### APIs
+
+**Pairing (no key required, the device code is the credential)**
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET`/`POST` | `/api/open/pair?code=903471` | device polling: `pending` means not bound, `bound` issues the token; limited to 60 requests/minute per IP |
+| `GET` | `/api/devices/claims` | dashboard (JWT): list codes currently polling and unclaimed |
+| `POST` | `/api/devices/bind` | dashboard (JWT): `{code, name?}` binds and issues a token |
+| `POST` | `/api/devices/{id}/reset-token` | dashboard (JWT): reissue the token, old token invalid immediately |
+
+**Streaming (device token or account-level API key)**
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/open/ingest` | push one audio chunk, returns the current chunk index and whether it is a new session |
+| `GET` | `/api/open/ingest` | device health check + current session state (startup self-test) |
+| `POST` | `/api/open/ingest/close` | explicitly close before sleep / shutdown instead of waiting for the timeout |
+
+Authentication forms:
+
+```
+X-Device-Token: dv_xxx          ← bound device (recommended)
 Authorization: Bearer dv_xxx
 
-X-API-Key: rk_xxx               ← 账号级密钥，适合脚本 / 未绑定的临时设备
+X-API-Key: rk_xxx               ← account-level key, for scripts / unbound temporary devices
 Authorization: Bearer rk_xxx
 ?key=rk_xxx
 ```
 
-音频格式可以是 `audio/wav`、`audio/webm`、`audio/mpeg`，也可以直接推**裸 PCM**
-（`audio/l16`、`audio/pcm`、`audio/raw`，默认 16kHz 单声道，可用 `rate`/`channels` 调整）——
-服务端会自动补上 WAV 头再送去识别。
+Audio can be `audio/wav`, `audio/webm`, `audio/mpeg`, or **raw PCM** (`audio/l16`, `audio/pcm`, `audio/raw`, 16 kHz mono by default, adjustable with `rate` / `channels`); the server adds a WAV header before recognition.
 
-### ESP32-C3 示例（Arduino）
+### ESP32-C3 example (Arduino)
 
-开机先按 MAC 算出编号，有 token 就直接用，没有就轮询等后台绑定；采到 10 秒 PCM 推一段。
+At boot, derive the code from the MAC; use a stored token if present, otherwise poll until the dashboard binds the device; push one 10-second PCM chunk at a time.
 
 ```cpp
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <Preferences.h>
 
-const char* SERVER = "http://192.168.1.10:8787";   // 电脑的局域网 IP
+const char* SERVER = "http://192.168.1.10:8787";   // computer's LAN IP
 Preferences nvs;
 String g_token;
 
-// ① MAC → 6 位数字编号
+// ① MAC → 6-digit code
 String deviceCode() {
   uint64_t mac = ESP.getEfuseMac();
   uint32_t x = (uint32_t)(mac & 0xFFFFFFFFULL);
@@ -529,16 +739,16 @@ String deviceCode() {
   return String(buf);
 }
 
-// ①' 没有屏幕的设备：开机把 6 位数字逐个播报，比连读成「九十万三千…」清楚
+// ①' screenless device: speak the 6 digits one by one at boot, clearer than reading "nine hundred thousand..."
 void speakCode() {
   String c = deviceCode();
   for (int i = 0; i < 6; i++) {
-    tts_speak_number(c[i] - '0');   // 换成你所用语音模块的播报函数
+    tts_speak_number(c[i] - '0');   // replace with your voice module's speak function
     delay(450);
   }
 }
 
-// ② 轮询取 token（3 秒一次，直到绑上）
+// ② poll for the token (every 3 seconds until bound)
 bool pairOnce() {
   if (WiFi.status() != WL_CONNECTED) return false;
 
@@ -553,17 +763,17 @@ bool pairOnce() {
 
   int i = body.indexOf("\"token\":\"");
   if (i < 0) {
-    Serial.printf("[pair] 等待后台绑定，编号 %s\n", deviceCode().c_str());
+    Serial.printf("[pair] waiting for dashboard binding, code %s\n", deviceCode().c_str());
     return false;
   }
   int s = i + 9, e = body.indexOf('"', s);
   g_token = body.substring(s, e);
   nvs.putString("token", g_token);
-  Serial.println("[pair] 已绑定，token 已存入 NVS");
+  Serial.println("[pair] bound, token stored in NVS");
   return true;
 }
 
-// ③ 推流（只带 token）
+// ③ stream (token only)
 bool pushAudio(const int16_t* pcm, size_t samples) {
   if (!g_token.length() || WiFi.status() != WL_CONNECTED) return false;
 
@@ -576,7 +786,7 @@ bool pushAudio(const int16_t* pcm, size_t samples) {
   String body = http.getString();
   http.end();
 
-  if (code == 401) {                    // token 被换发/设备被删 → 清掉重新配
+  if (code == 401) {                    // token reissued / device deleted → clear and re-pair
     nvs.remove("token");
     g_token = "";
   }
@@ -590,113 +800,76 @@ void setup() {
   g_token = nvs.getString("token", "");
   WiFi.begin("SSID", "PASSWORD");
   while (WiFi.status() != WL_CONNECTED) delay(300);
-  while (!g_token.length() && !pairOnce()) delay(3000);   // 等后台输入编号
+  while (!g_token.length() && !pairOnce()) delay(3000);   // wait for the code to be entered in the dashboard
 }
 ```
 
-几点实践建议：
+Practical advice:
 
-- **按 10~30 秒一段推**。段太大：失败重传代价高、纪要来得晚；段太小：请求太密集。
-- 设备关机前调一次 `POST /api/open/ingest/close`，纪要不用等 3 分钟超时。
-- 断网时把 PCM 存在 PSRAM/Flash 里，恢复后按顺序补推即可——服务端按到达时间归并，
-  只要补推间隔小于 `gapSec`，仍然会归到同一次会话里。
-- 设备只要内网能访问到电脑即可，不需要公网 IP、不需要 HTTPS（ESP32-C3 跑 TLS 很吃内存）。
-- 编号印在机身/包装上更省事：同一串数字永远不会变，掉了重新输一遍就能再绑。
-  设备被删或 token 泄露时，后台点「换发 token」，老 token 立即失效，设备自动重新配对。
-- **没有屏幕的设备**：开机用语音逐个数字播报（"九、零、三、四、七、一"），配一个确认音提示播完；
-  后台输入支持中文数字，听到什么输什么即可。
-- 编号相当于这台设备的「配对凭证」：知道编号的人可以取到 token，所以别把编号写进对外页面；
-  服务本身是内网部署（默认只监听局域网），这个信任边界是够用的。
+- **Push one chunk every 10–30 seconds**. Too large: expensive retries and late summaries; too small: too many requests.
+- Call `POST /api/open/ingest/close` once before shutdown so the summary does not wait for the 3-minute timeout.
+- While offline, store PCM in PSRAM/Flash and backfill in order once connectivity returns — with `recordedAt`, the server judges gaps by **recording time**, so dozens of chunks sent in seconds will not merge into one; without it, arrival time is used.
+- The device only needs LAN access to the computer; no public IP and no HTTPS required (TLS on ESP32-C3 is memory-hungry).
+- Printing the code on the case / packaging is convenient: the digits never change, and re-entering them rebinds after a reset. If the device is deleted or the token leaks, click "Reissue token" in the dashboard: the old token dies immediately and the device re-pairs automatically.
+- **Single-account servers claim devices automatically**: when the database has only one account, a device polling with its code is registered and issued a token without manual binding or reset; multi-account deployments still require explicit claiming.
+- **Screenless devices**: speak digits one at a time at boot ("nine, zero, three, four, seven, one") with a confirmation tone; the dashboard accepts Chinese number words, so type what you hear.
+- The code is effectively the device's **pairing credential**: anyone who knows it can obtain the token, so do not publish it on public pages; the service is deployed on a LAN (listening on the local network by default), which is a sufficient trust boundary.
 
-## 手机访问与录音权限
+## Mobile access and microphone permission
 
-浏览器只在 **HTTPS 或 localhost** 下允许网页调用麦克风。手机通过局域网 IP（`http://192.168.x.x:8787`）访问时，录音按钮会提示不可用，此时可以：
+Browsers only allow microphone access on **HTTPS or localhost**. When a phone opens the app via a LAN IP (`http://192.168.x.x:8787`), the record button will be unavailable; in that case:
 
-1. 用「上传音频文件」——从手机文件/录音机里选已有的录音，功能完全可用
-2. 或者给服务配一个 HTTPS 入口（Caddy / Nginx + 自签证书 / 内网穿透均可）
-3. iOS 可在 Safari 中「添加到主屏幕」，获得接近原生 App 的体验
+1. Use **Upload audio** — pick an existing recording from the phone's files / voice recorder; all features work
+2. Or put an HTTPS entry in front of the service (Caddy / Nginx + self-signed certificate / a tunnel)
+3. On iOS, use Safari's **Add to Home Screen** for a near-native app experience
 
-## 数据与备份
+## Data and backup
 
-| 路径 | 内容 |
+| Path | Contents |
 | --- | --- |
-| `data/recall.db` | 内置 SQLite 数据库（用户、录音元信息、转写、纪要、任务）；切到 PostgreSQL 后这份文件不再更新 |
-| `data/config.json` | 数据库连接配置（切换 SQLite / PostgreSQL 时写入） |
-| `data/backups/` | 自动快照，每次启动成功后留一份，保留最近 5 份 |
-| `data/uploads/<录音ID>/` | 音频文件，按分片存放，与数据库选型无关 |
-| `data/models/` | 本地开源 ASR 模型（只有选了本地引擎才会有），删掉不影响已有录音 |
+| `server-py/.env` | configuration: database connection string (`DATABASE_URL`), JWT secret, initial admin account |
+| `data/uploads/<recording id>/` | audio files, stored per chunk |
+| `data/models/` | local open-source ASR models (only if a local engine was chosen); deleting them does not affect existing recordings |
+| `pg-data/` | PostgreSQL data directory for compose (absent when using an external database) |
 
-备份：用 SQLite 时复制整个 `data/` 目录即可；用 PostgreSQL 时用 `pg_dump` 导出数据库，
-再加上 `data/uploads/` 的音频。删除某条记录时，对应的音频目录会一起清理。
-（用 `docker-compose.postgres.yml` 起库时，数据在 `./pg-data/`。）
+Backup: export the database with `pg_dump` and include the whole `data/` directory (audio and local models).
+Deleting a record also cleans up its audio directory.
 
-### 内置 SQLite 的自我保护
-
-SQLite 有个硬前提：**同一个库文件只能有一个进程写**。两个后端进程（或一边跑服务、
-一边用脚本改同一个库）同时打开，`-wal` / `-shm` 状态会对不上，症状是先刷
-`disk I/O error`，接着变成 `database disk image is malformed`，等于把库写废。
-所以后端启动时会做三件事（只对 SQLite 生效，PostgreSQL 不需要）：
-
-1. **单实例锁**：拿不到 `data/.sqlite.lock` 就直接退出，并打印占用者的 PID。
-   进程正常退出时锁自动释放，不会留死文件。也意味着 SQLite 模式下不要开多 worker。
-2. **启动体检**：跑一次 `PRAGMA quick_check`，不通过就中止启动并给出恢复指引，
-   而不是带着坏库继续写。运行期真碰上 malformed，接口会返回
-   `code: db_corrupted` 并明确提示怎么恢复。
-3. **自动快照**：体检通过、迁移完成后用 `VACUUM INTO` 导出一份到
-   `data/backups/recall-<时间戳>.db`，保留最近 5 份。真空导出是原子的，不会拷到半个 WAL 状态。
-
-恢复步骤（库真的坏了）：
-
-```bash
-# 1. 先停服务，避免边恢复边写
-lsof -nP -i :8787            # 找到 PID 后 kill
-
-# 2. 用最近一份快照覆盖，并清掉残留的 -wal / -shm
-cp data/backups/recall-20261030-140921.db data/recall.db
-rm -f data/recall.db-wal data/recall.db-shm
-
-# 3. 想抢救快照之后新增的数据，先用 .recover 导出成 SQL 再重建
-sqlite3 坏库文件 ".recover" > dump.sql
-sqlite3 新库文件 < dump.sql
-```
-
-## 目录结构
+## Directory structure
 
 ```
 .
-├── server-py/                    FastAPI 后端
+├── server-py/                    FastAPI backend
 │   ├── app/
-│   │   ├── main.py              入口：路由注册、静态托管、worker 启动、异常处理
-│   │   ├── config.py            配置与路径
-│   │   ├── db.py                数据访问门面（all_/one/execute），支持后端热切换 + 配置自动跟随
-│   │   ├── db_config.py         data/config.json 读写与 DATABASE_URL 解析
-│   │   ├── db_migrate.py        Alembic 入口：启动时 upgrade head
-│   │   ├── db_health.py         SQLite 三件套：单实例锁、启动体检、自动快照
-│   │   ├── database/            SQLite / PostgreSQL 后端（PG 带连接池）、占位符转换、语句切分
-│   │   ├── migrations/          版本化 DDL（versions/0001_initial.py 起）
-│   │   ├── tools/               SQLite → PostgreSQL 数据搬家脚本
-│   │   ├── security.py          bcrypt + JWT 鉴权依赖
-│   │   ├── jobs.py              任务队列与 worker
-│   │   ├── audio.py             ffmpeg / ffprobe 封装
-│   │   ├── bus.py               进程内事件总线（SSE 用）
-│   │   ├── providers/           ASR / LLM 适配层（云端 + 本地开源，可扩展）
-│   │   ├── services/            转写、纪要、整理提示词、服务商解析、本地模型仓库、设备配对与会话归并、用户偏好
-│   │   └── routes/              HTTP 接口（auth / setup / database / recordings / summaries / providers / devices / open）
-│   ├── pyproject.toml           依赖声明（uv）
-│   └── .env.example             环境变量模板
+│   │   ├── main.py              entry point: route registration, static hosting, worker startup, exception handling
+│   │   ├── config.py            configuration and paths
+│   │   ├── db.py                data access facade (all_/one/execute), PostgreSQL connection pool
+│   │   ├── db_config.py         parse DATABASE_URL and describe the connection
+│   │   ├── db_migrate.py        Alembic entry point: upgrade head at startup
+│   │   ├── database/            PostgreSQL backend (connection pool), placeholder conversion, statement splitting
+│   │   ├── migrations/          versioned DDL (starting with versions/0001_initial.py)
+│   │   ├── security.py          bcrypt + JWT auth dependencies
+│   │   ├── jobs.py              job queue and workers
+│   │   ├── audio.py             ffmpeg / ffprobe wrapper
+│   │   ├── bus.py               in-process event bus (for SSE)
+│   │   ├── providers/           ASR / LLM adapters (cloud + local open-source, extensible)
+│   │   ├── services/            transcription, summaries, prompts, provider resolution, local model repository, device pairing and session merging, user preferences
+│   │   └── routes/              HTTP endpoints (auth / setup / database / recordings / summaries / providers / devices / open)
+│   ├── pyproject.toml           dependencies (uv)
+│   └── .env.example             environment variable template
 ├── web/
 │   └── src/
-│       ├── pages/               登录 / 首页 / 录音 / 详情 / 回忆 / 设置
-│       ├── components/          布局、波形、思维导图、Markdown 渲染
-│       └── lib/                 API 客户端、鉴权、提示
-├── data/                        运行时数据（自动创建）
-├── legacy/nodejs-server/        已归档的 Node.js 版本后端
-└── scripts/dev.sh               一键开发启动
+│       ├── pages/               login / home / recording / detail / memories / settings
+│       ├── components/          layout, waveform, mind map, Markdown rendering
+│       └── lib/                 API client, auth, toast notifications
+├── data/                        runtime data (created automatically)
+├── legacy/nodejs-server/        archived Node.js backend
+└── scripts/dev.sh               one-command development startup
 ```
 
-## 扩展新的 ASR 服务商
+## Adding a new ASR provider
 
-在 `server-py/app/providers/asr.py` 里继承 `AsrEngine`：
+Subclass `AsrEngine` in `server-py/app/providers/asr.py`:
 
 ```python
 class MyAsr(AsrEngine):
@@ -707,24 +880,31 @@ class MyAsr(AsrEngine):
         }
 ```
 
-然后在 `create_asr_engine` 的分支里注册，并把类型加到 `ASR_KINDS`，设置页会自动出现该选项。
-`llm.py` 的 `LlmEngine.chat()` 同理。
+Then register it in a `create_asr_engine` branch and add the type to `ASR_KINDS`; the option appears in settings automatically. The same applies to `LlmEngine.chat()` in `llm.py`.
 
-本地引擎有额外约定：`ASR_KINDS` 里给条目加
-`localBackend: "sherpa-onnx" | "faster-whisper" | "whisper-cpp"` 和 `requiresKey/requiresBaseUrl: false`，
-前端就会隐藏 Key / URL 输入框、改成本地模型选择器。
-模型文件与下载逻辑都在 `services/local_asr_models.py`，新增 Whisper 尺寸往 `FASTER_WHISPER_SIZES` /
-`WHISPER_CPP_SIZES` 加一行；新增 sherpa-onnx 模型（FireRedASR、Fun-ASR-Nano 等预转换包）往
-`SHERPA_MODELS` 加一行「id / 显示名 / 体积 / 说明 / 压缩包名」即可，下载解压全自动。
+Local engines have extra conventions: add `localBackend: "sherpa-onnx" | "faster-whisper" | "whisper-cpp" | "mlx-qwen3-asr"` and `requiresKey/requiresBaseUrl: false` to the entry in `ASR_KINDS`; the frontend then hides the Key / URL inputs and shows a local model selector instead.
+Model files and download logic are in `services/local_asr_models.py`: add a line to `FASTER_WHISPER_SIZES` / `WHISPER_CPP_SIZES` for a new Whisper size; add a line with "id / display name / size / description / archive name" to `SHERPA_MODELS` for a new sherpa-onnx model (pre-converted packages such as FireRedASR or Fun-ASR-Nano), and downloading and extracting are fully automatic.
 
-## 已知限制
+## Known limitations
 
-- 单用户/小团队自用设计，未做多租户隔离与配额限制
-- 录音分片上传过程中关闭页面会丢失最后一段（已上传的分片不受影响）
-- 长文本纪要使用「分段提炼 + 汇总」策略，极长录音（> 3 小时）质量会略有下降
-- 未接入实时说话人分离（取决于 ASR 服务商能力；本地引擎暂不支持）
-- 本地 ASR 首次要下载几百 MB 模型，下载源慢时请耐心等或自行放好模型文件
-- 本地 ASR 在纯 CPU 上跑 `medium` 以上会明显慢于实时，长录音建议 `small` / `turbo` 或上 GPU
-- 网页上的数据库切换不迁移数据：需要保留旧数据时用 `app.tools.migrate_sqlite_to_pg` 手动搬一次
-- 内置 SQLite 只适合调试 / 单机体验：不支持多进程或多副本同时写（后端会用锁文件拦住第二个实例），
-  也不适合放在网络盘上；要正式长期用，建议切到外置 PostgreSQL
+- Designed for single-user / small-team use; no multi-tenant isolation or quotas
+- Closing the page mid-upload loses the final chunk (already uploaded chunks are unaffected)
+- Long summaries use "chunked extraction + merge"; quality drops slightly for very long recordings (> 3 hours)
+- Speaker diarization runs offline after transcription, not live; named voice identification (enrolling a person's voice and recognizing them automatically) is not implemented yet
+- Local ASR requires downloading hundreds of MB of models on first use; be patient with slow sources or place the model files yourself
+- On pure CPU, local ASR with `medium` or larger is noticeably slower than realtime; use `small` / `turbo` or a GPU for long recordings
+- PostgreSQL only: changing connection details requires editing a file and restarting; there is no UI switch
+- The old SQLite `data/recall.db` is no longer read; migrate historical data yourself
+
+## Troubleshooting: local ASR reports "subprocess exited unexpectedly (code=1)"
+
+Local engines (sherpa-onnx / faster-whisper) run in a separate subprocess. If every chunk fails within seconds and the error also contains `SAFE_DELETE_*` or other `sitecustomize` output, the cause is almost certainly a **`PYTHONPATH` polluted by the external environment**: some AI assistants / containers / security suites set `PYTHONPATH` in the shell to a directory containing `sitecustomize.py`, which hooks `os.remove`; the inference process is blocked while cleaning up a temporary PCM file and exits.
+
+Check and fix:
+
+```bash
+python -c "import py_compile,sys;print(sys.path)"   # look for strange shim directories
+env -u PYTHONPATH -u NODE_OPTIONS python -m app.main  # start with a clean environment
+```
+
+The code already has a safeguard: `PYTHONPATH` is stripped when spawning the subprocess, and the last lines of its stderr are appended to the error message (`Local ASR subprocess exited unexpectedly (code=1): <subprocess output>`), so the cause is visible next time.

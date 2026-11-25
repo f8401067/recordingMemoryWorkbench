@@ -49,6 +49,18 @@ def _tmp_path(suffix: str) -> Path:
     return TMP_DIR / f"{uuid.uuid4().hex}{suffix}"
 
 
+def _discard(path: Path) -> None:
+    """删临时文件；删不掉也不能把已经成功的转写结果一起丢掉。
+
+    受限环境（沙箱 / 只读挂载 / 文件被别的进程占着）里 unlink 会抛 OSError，
+    甚至被翻译成 Errno 18（Cross-device link）。这时文件留着让清理脚本处理即可。
+    """
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def to_pcm16k(path: str | Path) -> tuple[bytes, int]:
     """转成 16kHz 单声道 s16le PCM，供流式 ASR 推送。"""
     if not has_ffmpeg():
@@ -66,7 +78,7 @@ def to_pcm16k(path: str | Path) -> tuple[bytes, int]:
         data = out.read_bytes()
         return data, round(len(data) / 2 / 16000 * 1000)
     finally:
-        out.unlink(missing_ok=True)
+        _discard(out)
 
 
 def to_wav16k(path: str | Path) -> tuple[bytes, int]:
@@ -86,7 +98,7 @@ def to_wav16k(path: str | Path) -> tuple[bytes, int]:
         data = out.read_bytes()
         return data, max(0, round((len(data) - 44) / 2 / 16000 * 1000))
     finally:
-        out.unlink(missing_ok=True)
+        _discard(out)
 
 
 def split_audio(input_path: str | Path, out_dir: str | Path, segment_sec: int = 60) -> list[dict]:
